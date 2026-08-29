@@ -13,31 +13,35 @@ The contract is deliberately narrow so the scheduler (aigw/scheduler.py) can tre
 all providers uniformly. This mirrors Sub2API's `internal/gateway` adapter idea and
 antigravity-proxy's format-conversion modules.
 """
+
 from __future__ import annotations
 
-import time
-import enum
 import asyncio
+import enum
+import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional
 
 import httpx
 
 
 class AccountState(str, enum.Enum):
-    ACTIVE = "active"          # schedulable
-    COOLDOWN = "cooldown"      # 429 / temporary backoff, will recover
-    REAUTH = "reauth"          # 401 / refresh token dead, needs user re-login
-    DISABLED = "disabled"      # 403 entitlement / manually disabled
+    ACTIVE = "active"  # schedulable
+    COOLDOWN = "cooldown"  # 429 / temporary backoff, will recover
+    REAUTH = "reauth"  # 401 / refresh token dead, needs user re-login
+    DISABLED = "disabled"  # 403 entitlement / manually disabled
 
 
 @dataclass
 class Credential:
     """Normalized credential blob. Providers fill what they have."""
+
     access_token: str = ""
     refresh_token: str = ""
-    expires_at: float = 0.0            # unix ts; 0 = unknown
-    extra: dict = field(default_factory=dict)  # provider-specific (checksum, session id, client_id...)
+    expires_at: float = 0.0  # unix ts; 0 = unknown
+    extra: dict = field(
+        default_factory=dict
+    )  # provider-specific (checksum, session id, client_id...)
 
     def is_expired(self, skew: float = 60.0) -> bool:
         return self.expires_at != 0 and time.time() >= (self.expires_at - skew)
@@ -46,6 +50,7 @@ class Credential:
 @dataclass
 class Account:
     """A single upstream seat inside a provider's pool."""
+
     id: str
     provider: str
     label: str = ""
@@ -75,13 +80,49 @@ class Account:
 
 class UpstreamError(Exception):
     """Raised by adapters so the scheduler can decide retry vs. fail-fast."""
-    def __init__(self, status: int, message: str, retryable: bool = False,
-                 reauth: bool = False, cooldown: float = 0.0):
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        retryable: bool = False,
+        reauth: bool = False,
+        cooldown: float = 0.0,
+    ):
         super().__init__(message)
         self.status = status
         self.retryable = retryable
         self.reauth = reauth
         self.cooldown = cooldown
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    """What a provider can honestly do over the OpenAI surface.
+
+    Exposed on ``GET /v1/models`` so clients (Vaelis desktop / Hermes) can hide
+    models that cannot serve the current agent features (tools, vision, ...).
+    """
+
+    stream: bool = True
+    tools: bool = False
+    vision: bool = False
+    embeddings: bool = False
+    # True when the provider keeps a multi-turn / tool session across requests
+    # (e.g. long-lived CLI process). Stateless flatten-every-turn CLIs are False.
+    sessionful: bool = False
+    # compliant | gray | research  — product routing hint, not a security boundary
+    compliance: str = "research"
+
+    def as_dict(self) -> dict:
+        return {
+            "stream": self.stream,
+            "tools": self.tools,
+            "vision": self.vision,
+            "embeddings": self.embeddings,
+            "sessionful": self.sessionful,
+            "compliance": self.compliance,
+        }
 
 
 class Provider:
@@ -90,11 +131,17 @@ class Provider:
     name: str = "base"
     # model ids this provider serves in the unified namespace, e.g. "cursor/gpt-4o"
     served_models: tuple[str, ...] = ()
+    # Default capability flags; subclasses override ``capabilities()`` when needed.
+    default_capabilities: Capabilities = Capabilities()
 
     def __init__(self, config: dict, http: httpx.AsyncClient):
         self.config = config
         self.http = http
         self.accounts: list[Account] = []
+
+    def capabilities(self) -> Capabilities:
+        """Return capability flags for this provider (overridable per subclass)."""
+        return self.default_capabilities
 
     # --- lifecycle -------------------------------------------------------
     async def discover_accounts(self) -> list[Account]:
@@ -119,17 +166,25 @@ class Provider:
     # --- embeddings ----------------------------------------------------
     async def embeddings(self, acc: Account, oai_req: dict) -> dict:
         """OpenAI /v1/embeddings. Default: unsupported (real adapters add this)."""
-        raise UpstreamError(501, "embeddings not supported by this provider",
-                            retryable=False)
+        raise UpstreamError(501, "embeddings not supported by this provider", retryable=False)
 
     # --- introspection ---------------------------------------------------
     async def refresh_quota(self, acc: Account) -> None:
         """Optionally poll upstream for remaining quota. No-op by default."""
         return None
 
+    async def refresh_models(self, acc: Account) -> list[str] | None:
+        """Optionally refresh the provider's served model list from upstream.
+
+        Returns the new short model ids on success, or ``None`` to signal
+        "unsupported / failed" so the registry keeps the existing catalog.
+        Subclasses that can discover models dynamically override this.
+        """
+        return None
+
     # --- helpers shared by subclasses -----------------------------------
     @staticmethod
-    def _classify_http(status: int) -> Optional[UpstreamError]:
+    def _classify_http(status: int) -> UpstreamError | None:
         """Map upstream HTTP status to our retry/cooldown/reauth policy.
         Mirrors Sub2API: 401->reauth, 403->disable, 429->cooldown."""
         if status == 401:

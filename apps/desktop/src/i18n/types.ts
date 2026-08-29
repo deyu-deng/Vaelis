@@ -1150,6 +1150,39 @@ export interface Translations {
     failedRename: string
   }
 
+  agenda: {
+    close: string
+    title: string
+    loading: string
+    loadFailed: string
+    count: (count: number) => string
+    pendingCount: (count: number) => string
+    today: string
+    tomorrow: string
+    emptyTitle: string
+    emptyDesc: string
+    newEvent: string
+    edit: string
+    editTitle: string
+    createTitle: string
+    titleField: string
+    titlePlaceholder: string
+    titleTimeRequired: string
+    startLabel: string
+    kindLabel: string
+    sourceLabel: string
+    changeLabel: string
+    evidenceLabel: string
+    confirm: string
+    dismiss: string
+    confirmed: string
+    dismissed: string
+    deleted: string
+    actionFailed: string
+    statuses: Record<string, string>
+    kinds: Record<string, string>
+    sources: Record<string, string>
+  }
   cron: {
     close: string
     title: string
@@ -1732,6 +1765,9 @@ export interface Translations {
       running: (count: number) => string
       cron: string
       openCron: string
+      agenda: string
+      openAgenda: string
+      agendaPending: (count: number) => string
       starmap: string
       openStarmap: string
       turnRunning: string

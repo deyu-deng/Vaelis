@@ -7,6 +7,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
+  $currentProvider,
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
@@ -21,6 +22,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { isDesktopQuotaProvider } from '@/store/desktop-quotas'
 
 import type { ClientSessionState } from '../../types'
 
@@ -56,8 +58,14 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  // Desktop-quota providers (Antigravity/…) route to the local aigw hub, not
+  // the Hermes backend; their session is only a transcript container and
+  // reports Hermes's default model/provider. Don't let it overwrite the sticky
+  // local model/provider that drives routing.
+  if (!isDesktopQuotaProvider($currentProvider.get())) {
+    setCurrentModel(state.model ?? '')
+    setCurrentProvider(state.provider ?? '')
+  }
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

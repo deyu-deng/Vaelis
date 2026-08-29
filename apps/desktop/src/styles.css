@@ -9,12 +9,18 @@
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
 
+/* Source Serif 4 — display wordmark font (Adobe, OFL-licensed, bundled
+   locally so the desktop shell renders identically offline). Replaces the
+   upstream "Collapse" face that shipped from @nous-research/ui. Variable
+   wght axis 200–900 lets the wordmark use any weight via Tailwind utilities.
+   Chosen for the rebrand wordmark so it reads as an elegant serif instead of
+   the upstream tech-grotesque look. */
 @font-face {
-  font-family: 'Collapse';
+  font-family: 'Source Serif 4';
   font-style: normal;
-  font-weight: 700;
+  font-weight: 200 900;
   font-display: swap;
-  src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
+  src: url('./fonts/source-serif-4-latin-wght-normal.woff2') format('woff2');
 }
 
 /* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
@@ -1087,6 +1093,20 @@ text-* variant utilities. */ .btn-arc {
   .fit-text > :not([aria-hidden]) > * {
     white-space: nowrap;
   }
+}
+
+/* Wordmark gradient — follows the active theme's primary color so it changes
+   when the user switches between Nous, Ember, Midnight, etc. The end stop is
+   a lightened tint of the same primary, giving a subtle gradient without
+   hardcoding any theme's hex. */
+.wordmark-gradient {
+  background-image: linear-gradient(
+    to right,
+    var(--theme-primary) 0%,
+    color-mix(in srgb, var(--theme-primary) 65%, white) 100%
+  );
+  background-clip: text;
+  color: transparent;
 }
 
 @property --fit-captured-length {

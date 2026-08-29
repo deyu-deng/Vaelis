@@ -1,0 +1,334 @@
+import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
+import { useStore } from '@nanostores/react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { runInTerminal } from '@/app/right-sidebar/store';
+import { FEATURED_ID, FeaturedProviderRow, KeyProviderRow, ProviderRow, providerTitle, sortProviders } from '@/components/onboarding';
+import { Button } from '@/components/ui/button';
+import { RowButton } from '@/components/ui/row-button';
+import { SearchField } from '@/components/ui/search-field';
+import { disconnectOAuthProvider, listOAuthProviders } from '@/hermes';
+import { useI18n } from '@/i18n';
+import { Check, ChevronDown, ChevronRight, Globe, KeyRound, Loader2, Terminal, Trash2 } from '@/lib/icons';
+import { normalize } from '@/lib/text';
+import { cn } from '@/lib/utils';
+import { notify, notifyError } from '@/store/notifications';
+import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding';
+import { DESKTOP_QUOTA_MODELS, markConnected, refreshAllConnectedAppModels, refreshConnectedAppModels } from '@/store/desktop-quotas';
+import { isKeyVar, ProviderKeyRows, CREDENTIAL_CONTROL_CLASS } from './credential-key-ui';
+import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials';
+import { providerGroup, providerMeta, providerPriority } from './helpers';
+import { LoadingState, SettingsContent } from './primitives';
+// The embedded terminal (and thus the "run disconnect command" path) only
+// exists in the Electron desktop shell, not the web dashboard.
+const canRunInTerminal = () => typeof window !== 'undefined' && Boolean(window.hermesDesktop?.terminal);
+// Parallel group headers ("Connected", "Other providers") so the expanded list
+// reads as its own section instead of bleeding into the connected group.
+function GroupLabel({ children }) {
+    return (_jsx("p", { className: "mt-3 px-0.5 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)", children: children }));
+}
+// Sub-views surfaced as a sidebar subnav: account sign-in vs raw API keys.
+export const PROVIDER_VIEWS = ['accounts', 'keys', 'desktop'];
+const DESKTOP_QUOTA_APPS = [
+    {
+        id: 'antigravity',
+        name: 'Antigravity',
+        description: 'Google agent platform — Gemini models via your Google account (OAuth sign-in).',
+        verified: true // token route wired: aigw auth antigravity -> gateway
+    },
+    {
+        id: 'cursor',
+        name: 'Cursor',
+        description: 'Cursor agent — routes through your Cursor subscription quota (reads your local Cursor session, no sign-in needed).',
+        verified: true // local-session route wired: aigw cursor provider -> gateway on 8021
+    },
+    {
+        id: 'workbuddy',
+        name: 'Workbuddy',
+        description: 'Workbuddy desktop agent — routes through your local Workbuddy (CLI or Desktop) quota, no sign-in needed.',
+        verified: true // hybrid CLI/GUI route wired: aigw workbuddy provider -> gateway on 8020
+    }
+];
+// Group the env catalog by provider — one ListRow per vendor plus optional
+// advanced overrides (base URL, region, etc.). Groups without a key field are
+// skipped.
+//
+// Grouping key precedence:
+//   1. Backend `provider_label` / `provider` (from the unified provider catalog
+//      in hermes_cli/provider_catalog.py) — the SAME provider identity
+//      `hermes model` uses. This is authoritative: a provider tagged by the
+//      backend always renders a card, even with no PROVIDER_GROUPS row.
+//   2. Desktop prefix match (`providerGroup`) — legacy fallback for provider
+//      env vars that predate the backend tagging.
+// Only entries that resolve to neither (the "Other" bucket) are skipped.
+function buildProviderKeyGroups(vars) {
+    const buckets = new Map();
+    for (const [key, info] of Object.entries(vars)) {
+        if (info.category !== 'provider') {
+            continue;
+        }
+        // Prefer the backend-supplied provider label/id so the Keys tab groups by
+        // the same identity the CLI picker uses; fall back to the prefix guess.
+        const name = info.provider_label?.trim() || info.provider?.trim() || providerGroup(key);
+        if (name === 'Other') {
+            continue;
+        }
+        buckets.set(name, [...(buckets.get(name) ?? []), [key, info]]);
+    }
+    const groups = [];
+    for (const [name, entries] of buckets) {
+        const primary = entries.find(([k, i]) => !i.advanced && isKeyVar(k, i)) ?? entries.find(([k, i]) => isKeyVar(k, i));
+        if (!primary) {
+            continue;
+        }
+        // Presentation overlay (priority, blurb, docs) is keyed by the prefix-based
+        // group name; when the backend introduced this provider it may have no
+        // overlay entry, so fall back to the backend/env metadata for display.
+        const meta = providerMeta(name);
+        groups.push({
+            // Advanced = the provider's non-key knobs (base URL, region, deployment).
+            // Skip redundant alias key vars (e.g. ANTHROPIC_TOKEN vs ANTHROPIC_API_KEY)
+            // so we never render a second "Paste key" input — unless one is already
+            // set, in which case keep it visible so it stays clearable.
+            advanced: entries
+                .filter(([k, i]) => k !== primary[0] && (!isKeyVar(k, i) || i.is_set))
+                .sort(([a], [b]) => a.localeCompare(b)),
+            description: meta?.description ?? primary[1].description,
+            docsUrl: meta?.docsUrl ?? primary[1].url ?? undefined,
+            hasAnySet: entries.some(([, i]) => i.is_set),
+            name,
+            primary,
+            priority: providerPriority(name)
+        });
+    }
+    return groups.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name));
+}
+// Deliberately a near-1:1 replica of the first-run onboarding picker
+// (`Picker` in desktop-onboarding-overlay): same recommended card, same
+// provider rows, same "Other providers" disclosure, same OpenRouter quick-key
+// row, and the same bottom-right "I have an API key" affordance. The leaf cards
+// are the exact shared components, so the two surfaces stay visually identical.
+// Selecting a provider hands off to the shared onboarding overlay, which runs
+// that provider's real sign-in flow; the key affordances open the API-key
+// catalog below.
+function OAuthPicker({ disconnecting, onDisconnect, onTerminalDisconnect, onWantApiKey, providers }) {
+    const { t } = useI18n();
+    const p = t.settings.providers;
+    const [showAll, setShowAll] = useState(false);
+    const ordered = useMemo(() => sortProviders(providers), [providers]);
+    if (ordered.length === 0) {
+        return null;
+    }
+    const select = (p) => startManualProviderOAuth(p.id);
+    const featured = ordered.find(p => p.id === FEATURED_ID && !p.status?.logged_in) ?? null;
+    const rest = featured ? ordered.filter(p => p.id !== FEATURED_ID) : ordered;
+    // Keep connected accounts grouped and always visible; only the unconnected
+    // providers hide behind the disclosure, so the page leads with what's set up.
+    // Both lists preserve `sortProviders` order (curated priority, then name).
+    const connected = rest.filter(p => p.status?.logged_in);
+    const others = rest.filter(p => !p.status?.logged_in);
+    const collapsible = others.length > 0;
+    const showOthers = !collapsible || showAll;
+    return (_jsxs("section", { className: "mb-5 grid gap-2", children: [_jsxs("div", { className: "flex flex-wrap items-baseline justify-between gap-x-3", children: [_jsx(SettingsCategoryHeading, { icon: KeyRound, title: p.connectAccount }), _jsx(Button, { className: "text-[length:var(--conversation-caption-font-size)]", onClick: onWantApiKey, size: "inline", type: "button", variant: "textStrong", children: p.haveApiKey })] }), _jsx("p", { className: "-mt-2 mb-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)", children: p.intro }), featured && _jsx(FeaturedProviderRow, { onSelect: select, provider: featured }), connected.length > 0 && (_jsxs(_Fragment, { children: [_jsx(GroupLabel, { children: p.connected }), connected.map(p => (_jsx(ConnectedProviderRow, { disconnecting: disconnecting === p.id, onDisconnect: onDisconnect, onSelect: select, onTerminalDisconnect: onTerminalDisconnect, provider: p }, p.id)))] })), showOthers && (_jsxs(_Fragment, { children: [connected.length > 0 && _jsx(GroupLabel, { children: p.otherProviders }), others.map(p => (_jsx(ProviderRow, { onSelect: select, provider: p }, p.id))), _jsx(KeyProviderRow, { onClick: onWantApiKey })] })), collapsible && (_jsxs(Button, { className: "py-1 text-[length:var(--conversation-caption-font-size)]", onClick: () => setShowAll(v => !v), size: "inline", type: "button", variant: "text", children: [showAll ? p.collapse : connected.length > 0 ? p.connectAnother : p.otherProviders, _jsx(ChevronDown, { className: cn('size-3.5 transition', showAll && 'rotate-180') })] }))] }));
+}
+function ConnectedProviderRow({ disconnecting, onDisconnect, onSelect, onTerminalDisconnect, provider }) {
+    const { t } = useI18n();
+    const copy = t.settings.providers;
+    const title = providerTitle(provider);
+    const Trail = provider.flow === 'external' ? Terminal : ChevronRight;
+    // Vaelis can clear this provider's creds via the API.
+    const canDisconnect = provider.disconnectable ?? provider.flow !== 'external';
+    // External (CLI-managed) provider Vaelis can't clear via the API, but ships a
+    // command we can run in the embedded terminal (Electron shell only).
+    const terminalDisconnect = !canDisconnect && Boolean(provider.disconnect_command) && canRunInTerminal();
+    // Only fall back to a static "remove it elsewhere" hint when we offer no button.
+    const showHint = !canDisconnect && !terminalDisconnect;
+    return (_jsxs("div", { className: "group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)", children: [_jsxs(RowButton, { className: "min-w-0 px-3 py-2.5 text-left", onClick: () => onSelect(provider), children: [_jsxs("div", { className: "flex min-w-0 items-center gap-2", children: [_jsx("span", { className: "truncate text-[length:var(--conversation-text-font-size)] font-semibold", children: title }), _jsxs("span", { className: "inline-flex shrink-0 items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary", children: [_jsx(Check, { className: "size-3" }), copy.connected] })] }), _jsx("p", { className: "mt-1 text-xs leading-5 text-muted-foreground", children: t.onboarding.flowSubtitles[provider.flow] }), showHint && (_jsx("p", { className: "mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70", children: provider.flow === 'external' ? copy.removeExternalGeneric(title) : copy.removeKeyManaged(title) }))] }), _jsxs("div", { className: "flex items-center gap-1 pr-2", children: [_jsx(Trail, { className: "size-4 text-muted-foreground transition group-hover:text-foreground" }), canDisconnect && (_jsx(Button, { "aria-label": `${t.common.remove} ${title}`, disabled: disconnecting, onClick: () => onDisconnect(provider), size: "icon-xs", title: `${t.common.remove} ${title}`, type: "button", variant: "ghost", children: disconnecting ? _jsx(Loader2, { className: "size-3 animate-spin" }) : _jsx(Trash2, { className: "size-3" }) })), terminalDisconnect && (_jsx(Button, { "aria-label": `${copy.disconnect} ${title}`, onClick: () => onTerminalDisconnect(provider), size: "icon-xs", title: copy.disconnectInTerminal, type: "button", variant: "ghost", children: _jsx(Trash2, { className: "size-3" }) }))] })] }));
+}
+function NoProviderKeys() {
+    const { t } = useI18n();
+    return (_jsx("div", { className: "grid min-h-32 place-items-center px-4 py-8 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground", children: t.settings.providers.noProviderKeys }));
+}
+// Desktop Quotas — third provider pillar (parallel to Account / API key).
+// Lists the closed-source desktop apps whose subscription quota Vaelis can
+// route through. The Local Hub (aigw aggregator) is auto-managed by the
+// backend once an app is connected, so it is intentionally not surfaced here.
+// Frontend stays thin: it triggers backend OAuth and shows status; all token
+// capture and routing lives in the backend.
+function DesktopQuotasView() {
+    const { t } = useI18n();
+    const dq = t.settings.providers.desktopQuotas;
+    const [conn, setConn] = useState({});
+    // Per-app failure detail surfaced in the error affordance.
+    const [errInfo, setErrInfo] = useState({});
+    // Keep the model list fresh: re-fetch each connected app's live catalog from
+    // its aigw gateway whenever this view is opened (the gateway may have started
+    // with a newly-discovered upstream model list since the last connect).
+    useEffect(() => {
+        void refreshAllConnectedAppModels();
+    }, []);
+    // --- Connect handler (Antigravity via the compliant `agy` CLI route) ---
+    // The backend does NOT run an OAuth flow. It verifies the user's own `agy`
+    // CLI is installed and starts the local gateway. No token is returned, so
+    // success is keyed on `res.ok` alone.
+    const handleConnect = async (appId) => {
+        if (!window.hermesDesktop?.vaelisGateway?.auth)
+            return;
+        setConn((prev) => ({ ...prev, [appId]: 'connecting' }));
+        setErrInfo((prev) => { const n = { ...prev }; delete n[appId]; return n; });
+        try {
+            const res = await window.hermesDesktop.vaelisGateway.auth(appId);
+            if (res.ok) {
+                // Persist the connected app so its models surface in the chat selector
+                // (see store/desktop-quotas) and the gateway baseUrl for live routing.
+                // The api key is per-app (sk-local-<appId>) — never the Antigravity one.
+                markConnected({
+                    id: appId,
+                    models: res.models ?? DESKTOP_QUOTA_MODELS[appId],
+                    baseUrl: res.baseUrl,
+                    apiKey: `sk-local-${appId}`
+                });
+                setConn((prev) => ({ ...prev, [appId]: 'connected' }));
+                // Replace the placeholder/fallback list with the gateway's live catalog
+                // (the gateway discovers the real models from upstream at startup).
+                void refreshConnectedAppModels(appId);
+            }
+            else {
+                setConn((prev) => ({ ...prev, [appId]: 'error' }));
+                setErrInfo((prev) => ({ ...prev, [appId]: { code: res.code, message: res.error, installHint: res.installHint } }));
+            }
+        }
+        catch {
+            setConn((prev) => ({ ...prev, [appId]: 'error' }));
+        }
+    };
+    // Whether any app has been attempted
+    const hasAttempted = Object.values(conn).some(s => s !== 'idle');
+    const anyConnected = Object.values(conn).some(s => s === 'connected');
+    return (_jsx(SettingsContent, { children: _jsxs("div", { className: "grid gap-4", children: [_jsxs("div", { className: "grid gap-1", children: [_jsx(SettingsCategoryHeading, { icon: Globe, title: dq.title }), _jsx("p", { className: "-mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)", children: dq.intro })] }), !hasAttempted && !anyConnected && (_jsx("div", { className: "flex items-start gap-2 rounded-[6px] border border-(--ui-stroke-secondary) bg-(--ui-bg-quaternary) p-3", children: _jsx("p", { className: "text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)", children: dq.notVerified }) })), anyConnected && (_jsxs("div", { className: "flex items-start gap-2 rounded-[6px] border border-green-500/30 bg-green-500/5 p-3", children: [_jsx(Check, { className: "mt-0.5 size-4 shrink-0 text-green-600" }), _jsx("p", { className: "text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-green-700 dark:text-green-400", children: "App connected \u2014 its models are now available in the chat." })] })), _jsx("div", { className: "grid gap-2", children: DESKTOP_QUOTA_APPS.map(app => {
+                        const state = conn[app.id] || 'idle';
+                        const isConnected = state === 'connected';
+                        const isConnecting = state === 'connecting';
+                        const hasError = state === 'error';
+                        const canConnect = app.verified && !isConnected && !isConnecting;
+                        return (_jsx("div", { className: cn('@container group/card rounded-[6px] p-3 transition-colors', 'row-hover', 'ring-1 ring-(--ui-stroke-secondary)', isConnected && 'ring-green-500/30 bg-green-500/[0.02]'), children: _jsxs("div", { className: "grid grid-cols-1 items-start gap-x-3 gap-y-1.5 @2xl:grid-cols-[minmax(0,1fr)_auto] @2xl:gap-y-3", children: [_jsxs("div", { className: "flex min-w-0 items-center gap-2", children: [_jsx("span", { className: "min-w-0 truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground", children: app.name }), _jsx("span", { className: cn('inline-flex shrink-0 items-center gap-1 px-2 py-0.5 text-xs font-medium', isConnected ? 'bg-green-500/15 text-green-700 dark:text-green-400'
+                                                    : hasError ? 'bg-red-500/15 text-red-700 dark:text-red-400'
+                                                        : app.verified ? 'bg-(--ui-bg-quaternary) text-muted-foreground'
+                                                            : 'bg-(--ui-bg-quaternary) text-muted-foreground'), children: isConnected ? (_jsxs(_Fragment, { children: [_jsx(Check, { className: "size-3" }), "\u5DF2\u8FDE\u63A5"] })) : hasError ? ((typeof dq.connectError === 'function' ? dq.connectError(app.name) : dq.connectError) || '连接失败') : app.verified ? (dq.notConnected || '未连接') : (dq.notVerified) })] }), _jsx("div", { className: "flex min-w-0 items-center gap-2", children: _jsxs(Button, { className: cn(CREDENTIAL_CONTROL_CLASS, 'gap-1.5'), disabled: !canConnect, size: "sm", title: isConnecting ? `正在启动本地 ${app.name} 网关…`
+                                                : isConnected ? dq.connected
+                                                    : !app.verified ? dq.notVerified
+                                                        : dq.connect, variant: isConnected ? 'default' : 'secondary', onClick: () => canConnect && handleConnect(app.id), children: [isConnecting && (_jsx(Loader2, { className: "size-3.5 animate-spin" })), isConnected ? '已连接' : isConnecting ? '登录中…' : dq.connect] }) }), _jsxs("div", { className: "grid gap-3 @2xl:col-span-2", children: [_jsx("p", { className: "text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)", children: app.description }), hasError && (() => {
+                                                const info = errInfo[app.id];
+                                                if (info?.code === 'AUTH_FAILED' || info?.code === 'AUTH_ERROR') {
+                                                    return (_jsxs("div", { className: "text-xs text-red-600 dark:text-red-400", children: [_jsx("p", { children: "Google \u767B\u5F55\u672A\u5B8C\u6210\u6216\u88AB\u62D2\u7EDD\uFF0C\u8BF7\u91CD\u8BD5\u3002" }), info.message && (_jsx("pre", { className: "mt-1 overflow-x-auto rounded bg-(--ui-bg-quaternary) px-2 py-1 text-[0.7rem] leading-5 text-(--ui-text-secondary)", children: info.message }))] }));
+                                                }
+                                                return _jsx("p", { className: "text-xs text-red-600 dark:text-red-400", children: "\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5\uFF0C\u6216\u68C0\u67E5\u7EC8\u7AEF\u65E5\u5FD7\u3002" });
+                                            })(), isConnecting && (_jsxs("p", { className: "flex items-center gap-1.5 text-xs text-(--ui-text-secondary)", children: [_jsx(Loader2, { className: "size-3 animate-spin" }), app.id === 'antigravity'
+                                                        ? '正在通过 Google 登录连接 Antigravity。首次连接会打开浏览器让你登录 Google 账号。'
+                                                        : `正在连接本地 ${app.name} 网关，使用你已登录的 ${app.name} 配额。`] }))] })] }) }, app.id));
+                    }) })] }) }));
+}
+export function ProvidersSettings({ onClose, onViewChange, view }) {
+    const { t } = useI18n();
+    const { rowProps, vars } = useEnvCredentials();
+    const [oauthProviders, setOauthProviders] = useState([]);
+    const [openProvider, setOpenProvider] = useState(null);
+    const [disconnecting, setDisconnecting] = useState(null);
+    // Free-text filter for the API-keys view (provider name / env-var key / desc).
+    const [keyQuery, setKeyQuery] = useState('');
+    // The onboarding overlay owns the OAuth flow. Watch its `manual` flag so we
+    // re-read connection state when the user finishes (or dismisses) a sign-in
+    // they launched from this page — otherwise the cards keep their stale status.
+    const onboardingActive = useStore($desktopOnboarding).manual;
+    const refreshOAuthProviders = useCallback(async () => {
+        // OAuth providers are best-effort — a failure here just hides the panel.
+        const { providers } = await listOAuthProviders();
+        setOauthProviders(providers);
+    }, []);
+    useEffect(() => {
+        let cancelled = false;
+        void (async () => {
+            if (onboardingActive) {
+                return;
+            }
+            try {
+                const { providers } = await listOAuthProviders();
+                if (!cancelled) {
+                    setOauthProviders(providers);
+                }
+            }
+            catch {
+                // Ignore — the OAuth panel just won't render.
+            }
+        })();
+        return () => void (cancelled = true);
+    }, [onboardingActive]);
+    // External (CLI-managed) providers can't be cleared via the API by design —
+    // Vaelis never deletes creds another tool owns behind a silent API call.
+    // Instead we run the documented removal command in the embedded terminal so
+    // the user sees exactly what executes, then return them to chat to watch it.
+    function handleTerminalDisconnect(provider) {
+        const command = provider.disconnect_command;
+        if (!command) {
+            return;
+        }
+        const name = providerTitle(provider);
+        if (!window.confirm(t.settings.providers.removeTerminalConfirm(name, command))) {
+            return;
+        }
+        // Leave the settings overlay so the terminal pane (chat-only) is visible.
+        onClose();
+        runInTerminal(command);
+        notify({
+            kind: 'info',
+            title: t.settings.providers.removedTitle,
+            message: t.settings.providers.removeTerminalRunning(name)
+        });
+    }
+    async function handleDisconnect(provider) {
+        const name = providerTitle(provider);
+        if (!window.confirm(t.settings.providers.removeConfirm(name))) {
+            return;
+        }
+        setDisconnecting(provider.id);
+        try {
+            await disconnectOAuthProvider(provider.id);
+            notify({
+                durationMs: 3_000,
+                kind: 'success',
+                title: t.settings.providers.removedTitle,
+                message: t.settings.providers.removedMessage(name)
+            });
+            await refreshOAuthProviders().catch(() => undefined);
+        }
+        catch (err) {
+            notifyError(err, t.settings.providers.failedRemove(name));
+        }
+        finally {
+            setDisconnecting(null);
+        }
+    }
+    if (!vars) {
+        return _jsx(LoadingState, { label: t.settings.providers.loading });
+    }
+    const hasOauth = oauthProviders.length > 0;
+    // The sidebar subnav owns the Accounts/API-keys split now; with no OAuth
+    // providers there's nothing for the "Accounts" view to show, so fall to keys.
+    const showApiKeys = view === 'keys' || !hasOauth;
+    // Desktop Quotas is its own pillar — render it directly, independent of the
+    // Account / API-key split below.
+    if (view === 'desktop') {
+        return _jsx(DesktopQuotasView, {});
+    }
+    const keyGroups = buildProviderKeyGroups(vars);
+    if (showApiKeys) {
+        const q = normalize(keyQuery);
+        const visibleGroups = q
+            ? keyGroups.filter(group => {
+                const haystack = [group.name, group.description ?? '', group.primary[0], ...group.advanced.map(([k]) => k)];
+                return haystack.some(s => s.toLowerCase().includes(q));
+            })
+            : keyGroups;
+        return (_jsx(SettingsContent, { children: keyGroups.length > 0 ? (_jsxs("div", { className: "grid gap-3", children: [_jsx(SearchField, { "aria-label": t.settings.providers.searchKeys, containerClassName: "w-full", onChange: setKeyQuery, placeholder: t.settings.providers.searchKeys, value: keyQuery }), visibleGroups.length > 0 ? (_jsx("div", { className: "grid gap-2", children: visibleGroups.map(group => (_jsx(ProviderKeyRows, { expanded: openProvider === group.name, group: group, onExpand: () => setOpenProvider(group.name), onToggle: () => setOpenProvider(prev => (prev === group.name ? null : group.name)), rowProps: rowProps }, group.name))) })) : (_jsx("div", { className: "grid min-h-24 place-items-center px-4 py-6 text-center text-[length:var(--conversation-caption-font-size)] text-muted-foreground", children: t.settings.providers.noKeysMatch }))] })) : (_jsx(NoProviderKeys, {})) }));
+    }
+    return (_jsx(SettingsContent, { children: _jsx(OAuthPicker, { disconnecting: disconnecting, onDisconnect: provider => void handleDisconnect(provider), onTerminalDisconnect: handleTerminalDisconnect, onWantApiKey: () => onViewChange('keys'), providers: oauthProviders }) }));
+}

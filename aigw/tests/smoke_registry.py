@@ -1,4 +1,5 @@
 """Smoke test: aigw loads the Antigravity config and registers its models."""
+
 import asyncio
 import os
 

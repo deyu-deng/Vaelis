@@ -12,6 +12,7 @@ ever live in process memory.
 This is *not* a substitute for the upstream auth flow — it only protects tokens at
 rest. See README "风险与最佳实践".
 """
+
 from __future__ import annotations
 
 import base64
@@ -19,7 +20,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -29,8 +30,14 @@ class VaultError(Exception):
 
 
 class Vault:
-    def __init__(self, backend: str = "auto", *, service: str = "aigw",
-                 keyfile: Optional[Path] = None, vault_path: Optional[Path] = None):
+    def __init__(
+        self,
+        backend: str = "auto",
+        *,
+        service: str = "aigw",
+        keyfile: Path | None = None,
+        vault_path: Path | None = None,
+    ):
         """
         backend     : "auto" | "keyring" | "file"
         service     : keyring service name (ignored for file backend)
@@ -49,7 +56,8 @@ class Vault:
     def _load_key(self) -> bytes:
         if self.backend in ("keyring", "auto"):
             try:
-                import keyring  # type: ignore
+                import keyring
+
                 stored = keyring.get_password(self.service, "master-key")
                 if stored:
                     return base64.urlsafe_b64decode(stored)
@@ -82,7 +90,7 @@ class Vault:
             self.vault_path.write_text(self.encrypt_obj(obj))
             os.chmod(self.vault_path, 0o600)
 
-    def load(self) -> Optional[Any]:
+    def load(self) -> Any | None:
         if not self.vault_path.exists():
             return None
         with self._lock:
@@ -92,7 +100,8 @@ class Vault:
     def backend_used(self) -> str:
         # report which backend actually produced the key
         try:
-            import keyring  # type: ignore
+            import keyring
+
             if keyring.get_password(self.service, "master-key"):
                 return "keyring"
         except Exception:

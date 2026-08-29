@@ -11,15 +11,16 @@ Responsibilities (borrowed from Sub2API's smart-scheduling design):
   - drive token refresh before each dispatch, and feed last_used/health to the
     TokenManager
 """
+
 from __future__ import annotations
 
-import time
-import random
 import asyncio
-from typing import AsyncIterator, Callable, Optional
+import random
+import time
+from collections.abc import AsyncIterator
 
-from .providers.base import Provider, Account, AccountState, UpstreamError
-from .tokens.manager import TokenManager, Health
+from .providers.base import Account, AccountState, Provider, UpstreamError
+from .tokens.manager import Health, TokenManager
 
 
 class NoAccountAvailable(Exception):
@@ -27,13 +28,17 @@ class NoAccountAvailable(Exception):
 
 
 class Scheduler:
-    def __init__(self, providers: dict[str, Provider], *,
-                 max_retries: int = 3,
-                 global_concurrency: int = 32,
-                 per_account_concurrency: int = 4,
-                 sticky_ttl: float = 1800.0,
-                 strategy: str = "least_fail",
-                 token_manager: Optional[TokenManager] = None):
+    def __init__(
+        self,
+        providers: dict[str, Provider],
+        *,
+        max_retries: int = 3,
+        global_concurrency: int = 32,
+        per_account_concurrency: int = 4,
+        sticky_ttl: float = 1800.0,
+        strategy: str = "least_fail",
+        token_manager: TokenManager | None = None,
+    ):
         self.providers = providers
         self.max_retries = max_retries
         self.sticky_ttl = sticky_ttl
@@ -56,7 +61,9 @@ class Scheduler:
         # "provider/anything" is implicitly served if the provider is enabled
         return model.startswith(prov.name + "/")
 
-    def _candidates(self, prov_list: list[str], tried: set[str], model: str) -> list[tuple[Account, str]]:
+    def _candidates(
+        self, prov_list: list[str], tried: set[str], model: str
+    ) -> list[tuple[Account, str]]:
         out = []
         for p in prov_list:
             prov = self.providers.get(p)
@@ -67,8 +74,9 @@ class Scheduler:
                     out.append((a, p))
         return out
 
-    def _select(self, candidates: list[tuple[Account, str]],
-                session_id: Optional[str]) -> tuple[Account, str]:
+    def _select(
+        self, candidates: list[tuple[Account, str]], session_id: str | None
+    ) -> tuple[Account, str]:
         # sticky: reuse the pinned account if still in the candidate set
         if session_id and session_id in self._sticky:
             acc_id = self._sticky[session_id][0]
@@ -87,8 +95,7 @@ class Scheduler:
         return best
 
     # ---- dispatch -------------------------------------------------------
-    async def dispatch(self, provider, oai_req: dict,
-                       session_id: Optional[str], stream: bool):
+    async def dispatch(self, provider, oai_req: dict, session_id: str | None, stream: bool):
         """provider may be a single provider name or a list of names (cross-provider
         failover). Returns a dict (non-stream) or an async iterator (stream)."""
         prov_list = list(provider) if isinstance(provider, (list, tuple)) else [provider]
@@ -97,7 +104,7 @@ class Scheduler:
             raise NoAccountAvailable(f"no such provider(s): {provider}")
 
         tried: set[str] = set()
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
 
         for attempt in range(self.max_retries):
             candidates = self._candidates(prov_list, tried, oai_req["model"])
@@ -146,6 +153,7 @@ class Scheduler:
             finally:
                 sem.release()
                 self._global_sem.release()
+
         return gen()
 
     # ---- bookkeeping hooks ---------------------------------------------

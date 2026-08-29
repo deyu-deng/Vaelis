@@ -30,14 +30,15 @@ Config:
       - { id: mock-echo, mode: echo }
       - { id: mock-fail, mode: fail }
 """
+
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
-import asyncio
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
-from .base import Provider, Account, Credential, UpstreamError
+from .base import Account, Capabilities, Credential, Provider, UpstreamError
 
 
 def _last_user_text(oai_req: dict) -> str:
@@ -58,11 +59,13 @@ def _completion(model: str, text: str, finish: str = "stop") -> dict:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "finish_reason": finish,
-            "message": {"role": "assistant", "content": text},
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": finish,
+                "message": {"role": "assistant", "content": text},
+            }
+        ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
@@ -80,6 +83,14 @@ def _chunk(cid: str, model: str, text=None, finish=None) -> dict:
 
 class MockProvider(Provider):
     name = "mock"
+    default_capabilities = Capabilities(
+        stream=True,
+        tools=False,
+        vision=False,
+        embeddings=True,
+        sessionful=False,
+        compliance="compliant",
+    )
 
     def __init__(self, config, http):
         super().__init__(config, http)
@@ -122,8 +133,7 @@ class MockProvider(Provider):
     def _maybe_raise(self, acc: Account):
         mode = getattr(acc, "_mock_mode", self.default_mode)
         if mode == "fail":
-            raise UpstreamError(429, "mock rate limited",
-                                retryable=True, cooldown=0.05)
+            raise UpstreamError(429, "mock rate limited", retryable=True, cooldown=0.05)
         if mode == "dead":
             raise UpstreamError(401, "mock dead token", reauth=True)
 
@@ -148,6 +158,7 @@ class MockProvider(Provider):
     @staticmethod
     def _embed(text: str, dim: int) -> list[float]:
         import hashlib
+
         digest = hashlib.sha256(text.encode("utf-8")).digest()
         return [round((digest[i % len(digest)] / 127.5) - 1.0, 6) for i in range(dim)]
 
@@ -155,11 +166,14 @@ class MockProvider(Provider):
         self._maybe_raise(acc)
         inp = oai_req.get("input", "")
         texts = inp if isinstance(inp, list) else [inp]
-        data = [{
-            "object": "embedding",
-            "index": i,
-            "embedding": self._embed(t, self.embedding_dim),
-        } for i, t in enumerate(texts)]
+        data = [
+            {
+                "object": "embedding",
+                "index": i,
+                "embedding": self._embed(t, self.embedding_dim),
+            }
+            for i, t in enumerate(texts)
+        ]
         prompt_tokens = sum(len(t.split()) for t in texts) or len(texts)
         return {
             "object": "list",

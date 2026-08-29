@@ -127,6 +127,7 @@ import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
 
+const AgendaView = lazy(async () => ({ default: (await import('./agenda')).AgendaView }))
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
@@ -215,6 +216,7 @@ export function DesktopController() {
 
   const {
     agentsOpen,
+    agendaOpen,
     chatOpen,
     closeOverlayToPreviousRoute,
     commandCenterInitialSection,
@@ -1128,6 +1130,12 @@ export function DesktopController() {
             onClose={closeOverlayToPreviousRoute}
             onOpenSession={sessionId => navigate(sessionRoute(sessionId))}
           />
+        </Suspense>
+      )}
+
+      {agendaOpen && (
+        <Suspense fallback={null}>
+          <AgendaView onClose={closeOverlayToPreviousRoute} />
         </Suspense>
       )}
 

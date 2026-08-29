@@ -18,6 +18,7 @@ export function useOverlayRouting() {
   const navigate = useNavigate()
 
   const currentView = appViewForPath(location.pathname)
+  const agendaOpen = currentView === 'agenda'
   const settingsOpen = currentView === 'settings'
   const commandCenterOpen = currentView === 'command-center'
   const agentsOpen = currentView === 'agents'
@@ -64,6 +65,7 @@ export function useOverlayRouting() {
   const openStarmap = useCallback(() => navigate(STARMAP_ROUTE), [navigate])
 
   return {
+    agendaOpen,
     agentsOpen,
     chatOpen,
     closeOverlayToPreviousRoute,

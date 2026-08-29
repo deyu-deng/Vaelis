@@ -24,35 +24,34 @@ Windows/Linux Cursor path differs:
   Win:   %APPDATA%\Cursor\User\globalStorage\state.vscdb
   Linux: ~/.config/Cursor/User/globalStorage/state.vscdb
 """
+
 from __future__ import annotations
 
-import os
-import re
-import json
-import time
 import base64
-import sqlite3
+import json
 import os
-import subprocess
 import platform
+import re
+import sqlite3
+import subprocess
+import time
 from pathlib import Path
-from typing import Optional
-
 
 # Google Code Assist OAuth client (the exact public client the Antigravity desktop
 # app and the reference antigravity-proxy use). A refresh token minted against this
 # client is exchangeable at oauth2.googleapis.com/token for a `ya29.` access token
 # that works against cloudcode-pa.googleapis.com.
-GOOGLE_CC_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-GOOGLE_CC_CLIENT_SECRET = os.environ.get("GOOGLE_CC_CLIENT_SECRET", "")
-# Antigravity public OAuth client secret — supplied via GOOGLE_CC_CLIENT_SECRET env var
-# at runtime, never committed to the repo.
+GOOGLE_CC_CLIENT_ID = os.environ.get("GOOGLE_CC_CLIENT_ID")
+GOOGLE_CC_CLIENT_SECRET = os.environ.get("GOOGLE_CC_CLIENT_SECRET")
+# Antigravity public OAuth client secret — shipped inside every Google Cloud Code
+# / Antigravity IDE installation. The default is the known public value (also in
+# open-source integrations like pi_agent_rust). Override via env if rotated.
 
 
 # ---------------------------------------------------------------------------
 # path resolution
 # ---------------------------------------------------------------------------
-def cursor_state_db() -> Optional[Path]:
+def cursor_state_db() -> Path | None:
     sys = platform.system()
     home = Path.home()
     if sys == "Darwin":
@@ -64,7 +63,21 @@ def cursor_state_db() -> Optional[Path]:
     return p if p.exists() else None
 
 
-def antigravity_db() -> Optional[Path]:
+def cursor_storage_json() -> Path | None:
+    """Cursor's VS Code-style storage.json holds the device ids used to build
+    the `x-cursor-checksum` anti-abuse header. Path mirrors state.vscdb."""
+    sys = platform.system()
+    home = Path.home()
+    if sys == "Darwin":
+        p = home / "Library/Application Support/Cursor/User/globalStorage/storage.json"
+    elif sys == "Windows":
+        p = Path(os.environ.get("APPDATA", "")) / "Cursor/User/globalStorage/storage.json"
+    else:
+        p = home / ".config/Cursor/User/globalStorage/storage.json"
+    return p if p.exists() else None
+
+
+def antigravity_db() -> Path | None:
     p = Path.home() / ".antigravity/db.sqlite"
     return p if p.exists() else None
 
@@ -80,36 +93,51 @@ def _read_item_table(db_path: Path, keys: list[str]) -> dict[str, str]:
     try:
         cur = con.cursor()
         qmarks = ",".join("?" * len(keys))
-        for k, v in cur.execute(
-            f"SELECT key, value FROM ItemTable WHERE key IN ({qmarks})", keys
-        ):
+        for k, v in cur.execute(f"SELECT key, value FROM ItemTable WHERE key IN ({qmarks})", keys):
             out[k] = v.decode() if isinstance(v, (bytes, bytearray)) else str(v)
     finally:
         con.close()
     return out
 
 
-def read_cursor() -> Optional[dict]:
+def read_cursor() -> dict | None:
     db = cursor_state_db()
     if not db:
         return None
-    rows = _read_item_table(db, [
-        "cursorAuth/accessToken",
-        "cursorAuth/refreshToken",
-        "cursorAuth/cachedEmail",
-        "cursorAuth/stripeMembershipType",
-    ])
+    rows = _read_item_table(
+        db,
+        [
+            "cursorAuth/accessToken",
+            "cursorAuth/refreshToken",
+            "cursorAuth/cachedEmail",
+            "cursorAuth/stripeMembershipType",
+        ],
+    )
     if not rows.get("cursorAuth/accessToken"):
         return None
-    return {
+    out = {
         "access_token": rows.get("cursorAuth/accessToken", ""),
         "refresh_token": rows.get("cursorAuth/refreshToken", ""),
         "email": rows.get("cursorAuth/cachedEmail", ""),
         "tier": rows.get("cursorAuth/stripeMembershipType", ""),
+        # Device ids for x-cursor-checksum (best-effort; absent is OK — the
+        # checksum just omits the machine-id suffix in that case).
+        "machine_id": "",
+        "mac_machine_id": "",
     }
+    sj = cursor_storage_json()
+    if sj:
+        try:
+            with open(sj, "r", encoding="utf-8", errors="replace") as fh:
+                data = json.load(fh)
+            out["machine_id"] = data.get("telemetry.machineId", "") or ""
+            out["mac_machine_id"] = data.get("telemetry.macMachineId", "") or ""
+        except Exception:
+            pass
+    return out
 
 
-def read_antigravity() -> Optional[dict]:
+def read_antigravity() -> dict | None:
     db = antigravity_db()
     if not db:
         return None
@@ -142,11 +170,10 @@ def parse_composite_refresh(refresh: str) -> tuple[str, str, str]:
     Returns (refresh_token, project_id, managed_project_id). Missing parts -> "".
     """
     parts = (refresh or "").split("|")
-    return (parts[0], parts[1] if len(parts) > 1 else "",
-            parts[2] if len(parts) > 2 else "")
+    return (parts[0], parts[1] if len(parts) > 1 else "", parts[2] if len(parts) > 2 else "")
 
 
-def read_antigravity_access_token() -> Optional[str]:
+def read_antigravity_access_token() -> str | None:
     """Read the live access token from the macOS Keychain entry
     svce="gemini", acct="antigravity" (a go-keyring-base64 blob that wraps a
     ``ya29.`` token).
@@ -160,7 +187,10 @@ def read_antigravity_access_token() -> Optional[str]:
     try:
         out = subprocess.run(
             ["security", "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"],
-            capture_output=True, text=True, timeout=8)
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
     except Exception:
         return None
     raw = (out.stdout or "").strip()
@@ -168,7 +198,7 @@ def read_antigravity_access_token() -> Optional[str]:
         return None
     if raw.startswith("go-keyring-base64:"):
         try:
-            raw = base64.b64decode(raw[len("go-keyring-base64:"):]).decode("latin1")
+            raw = base64.b64decode(raw[len("go-keyring-base64:") :]).decode("latin1")
         except Exception:
             pass
     m = re.search(r"ya29\.[A-Za-z0-9._-]+", raw)
@@ -194,27 +224,34 @@ async def refresh_cursor(http, refresh_token: str) -> dict:
     if data.get("shouldLogout"):
         raise PermissionError("cursor refresh token dead (shouldLogout=true)")
     # access token is a JWT; exp is inside. Default 50 min if not parsed.
-    return {"access_token": data.get("access_token", ""),
-            "expires_at": _jwt_exp(data.get("access_token", "")) or time.time() + 3000}
+    return {
+        "access_token": data.get("access_token", ""),
+        "expires_at": _jwt_exp(data.get("access_token", "")) or time.time() + 3000,
+    }
 
 
-async def refresh_antigravity(http, refresh_token: str,
-                              client_id: str = GOOGLE_CC_CLIENT_ID,
-                              client_secret: str = GOOGLE_CC_CLIENT_SECRET) -> dict:
-    body = {"grant_type": "refresh_token", "refresh_token": refresh_token,
-            "client_id": client_id}
+async def refresh_antigravity(
+    http,
+    refresh_token: str,
+    client_id: str = GOOGLE_CC_CLIENT_ID,
+    client_secret: str = GOOGLE_CC_CLIENT_SECRET,
+) -> dict:
+    body = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
     if client_secret:
         body["client_secret"] = client_secret
     r = await http.post("https://oauth2.googleapis.com/token", data=body)
     r.raise_for_status()
     d = r.json()
-    return {"access_token": d["access_token"],
-            "expires_at": time.time() + int(d.get("expires_in", 3000))}
+    return {
+        "access_token": d["access_token"],
+        "expires_at": time.time() + int(d.get("expires_in", 3000)),
+    }
 
 
-def _jwt_exp(token: str) -> Optional[float]:
+def _jwt_exp(token: str) -> float | None:
     try:
         import base64
+
         payload = token.split(".")[1]
         payload += "=" * (-len(payload) % 4)
         return float(json.loads(base64.urlsafe_b64decode(payload)).get("exp"))

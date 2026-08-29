@@ -1275,6 +1275,53 @@ export const zhHant = defineLocale({
     failedRename: '重新命名設定檔失敗'
   },
 
+  agenda: {
+    close: '關閉行程',
+    title: '行程',
+    loading: '正在載入行程…',
+    loadFailed: '行程載入失敗',
+    count: count => `${count} 筆行程`,
+    pendingCount: count => `${count} 筆待你確認`,
+    today: '今天',
+    tomorrow: '明天',
+    emptyTitle: '目前沒有行程',
+    emptyDesc: '從訊息中辨識到的行程會顯示在這裡，你也可以自己新增。',
+    newEvent: '新增行程',
+    edit: '編輯行程',
+    editTitle: '編輯行程',
+    createTitle: '新增行程',
+    titleField: '標題',
+    titlePlaceholder: '這是什麼安排？',
+    titleTimeRequired: '標題和開始時間不可空白。',
+    startLabel: '開始',
+    kindLabel: '類型',
+    sourceLabel: '來源',
+    changeLabel: '待確認的變更',
+    evidenceLabel: '證據',
+    confirm: '確認',
+    dismiss: '忽略',
+    confirmed: '已確認',
+    dismissed: '已忽略此變更',
+    deleted: '已刪除',
+    actionFailed: '行程操作失敗',
+    statuses: {
+      pending: '待確認',
+      confirmed: '已確認',
+      cancelled: '已取消'
+    },
+    kinds: {
+      meeting: '會議',
+      ddl: '截止',
+      class: '課程',
+      task: '事項'
+    },
+    sources: {
+      wechat: '微信',
+      dingtalk: '釘釘',
+      manual: '手動新增',
+      timetable: '課表'
+    }
+  },
   cron: {
     close: '關閉排程',
     title: '排程工作',
@@ -1980,6 +2027,9 @@ export const zhHant = defineLocale({
       running: count => `${count} 個執行中`,
       cron: '排程',
       openCron: '開啟排程工作',
+      agenda: '行程',
+      openAgenda: '開啟行程',
+      agendaPending: count => `${count} 筆待確認`,
       starmap: '記憶圖譜',
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',

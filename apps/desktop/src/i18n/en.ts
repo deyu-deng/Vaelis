@@ -1377,6 +1377,53 @@ export const en: Translations = {
     failedRename: 'Failed to rename profile'
   },
 
+  agenda: {
+    close: 'Close agenda',
+    title: 'Agenda',
+    loading: 'Loading agenda…',
+    loadFailed: 'Could not load the agenda',
+    count: count => `${count} ${count === 1 ? 'entry' : 'entries'}`,
+    pendingCount: count => `${count} awaiting your confirmation`,
+    today: 'Today',
+    tomorrow: 'Tomorrow',
+    emptyTitle: 'Nothing scheduled',
+    emptyDesc: 'Entries picked up from messages appear here, and you can add your own.',
+    newEvent: 'New entry',
+    edit: 'Edit entry',
+    editTitle: 'Edit entry',
+    createTitle: 'New entry',
+    titleField: 'Title',
+    titlePlaceholder: 'What is happening?',
+    titleTimeRequired: 'Title and start time are required.',
+    startLabel: 'Starts',
+    kindLabel: 'Type',
+    sourceLabel: 'Source',
+    changeLabel: 'Proposed change',
+    evidenceLabel: 'Evidence',
+    confirm: 'Confirm',
+    dismiss: 'Dismiss',
+    confirmed: 'Entry confirmed',
+    dismissed: 'Change dismissed',
+    deleted: 'Entry deleted',
+    actionFailed: 'Agenda action failed',
+    statuses: {
+      pending: 'awaiting you',
+      confirmed: 'confirmed',
+      cancelled: 'cancelled'
+    },
+    kinds: {
+      meeting: 'Meeting',
+      ddl: 'Deadline',
+      class: 'Class',
+      task: 'Task'
+    },
+    sources: {
+      wechat: 'WeChat',
+      dingtalk: 'DingTalk',
+      manual: 'Added by you',
+      timetable: 'Timetable'
+    }
+  },
   cron: {
     close: 'Close cron',
     title: 'Scheduled jobs',
@@ -2101,6 +2148,9 @@ export const en: Translations = {
       running: count => `${count} running`,
       cron: 'Cron',
       openCron: 'Open cron jobs',
+      agenda: 'Agenda',
+      openAgenda: 'Open agenda',
+      agendaPending: count => `${count} awaiting`,
       starmap: 'Memory Graph',
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',

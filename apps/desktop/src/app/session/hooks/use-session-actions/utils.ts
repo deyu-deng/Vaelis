@@ -6,6 +6,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $currentProvider,
   $sessions,
   setCurrentBranch,
   setCurrentCwd,
@@ -19,6 +20,7 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
+import { isDesktopQuotaProvider } from '@/store/desktop-quotas'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -273,12 +275,20 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   reportInstallMethodWarning(info.install_warning)
 
   if (typeof info.model === 'string') {
-    setCurrentModel(info.model)
+    // Desktop-quota providers (Antigravity/…) route to the local aigw hub, not
+    // the Hermes backend. Their session is only a transcript container and
+    // reports Hermes's default model, so don't let it clobber the sticky local
+    // model that drives routing. (The per-session cache still records it below.)
+    if (!isDesktopQuotaProvider($currentProvider.get())) {
+      setCurrentModel(info.model)
+    }
     sessionState.model = info.model
   }
 
   if (typeof info.provider === 'string') {
-    setCurrentProvider(info.provider)
+    if (!isDesktopQuotaProvider($currentProvider.get())) {
+      setCurrentProvider(info.provider)
+    }
     sessionState.provider = info.provider
   }
 

@@ -548,6 +548,55 @@ export interface AnalyticsTotals {
   total_sessions: number
 }
 
+// Agenda (AI-secretary M1). Mirrors vaelis/agenda/store.py::Event — keep the
+// two in sync; the board renders `pending` rows against `prev_value`.
+export type AgendaKind = 'class' | 'ddl' | 'meeting' | 'task'
+export type AgendaStatus = 'cancelled' | 'confirmed' | 'pending'
+export type AgendaSource = 'dingtalk' | 'manual' | 'timetable' | 'wechat'
+
+export interface AgendaEvidence {
+  msg_id?: string
+  sent_at?: string
+  snippet?: string
+  talker?: string
+}
+
+export interface AgendaPrevValue {
+  end_at?: null | string
+  start_at?: string
+  title?: string
+}
+
+export interface AgendaEvent {
+  confirm_seq?: null | number
+  confirm_seq_at?: null | string
+  created_at: string
+  end_at?: null | string
+  evidence?: AgendaEvidence | null
+  id: string
+  kind: AgendaKind
+  prev_value?: AgendaPrevValue | null
+  source: AgendaSource
+  start_at: string
+  status: AgendaStatus
+  title: string
+  updated_at: string
+}
+
+export interface AgendaEventCreate {
+  end_at?: string
+  kind?: AgendaKind
+  start_at: string
+  title: string
+}
+
+export interface AgendaEventPatch {
+  end_at?: string
+  kind?: AgendaKind
+  start_at?: string
+  title?: string
+}
+
 export interface CronJob {
   deliver?: null | string
   enabled: boolean

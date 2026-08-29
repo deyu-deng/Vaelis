@@ -3,6 +3,9 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  AgendaEvent,
+  AgendaEventCreate,
+  AgendaEventPatch,
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
@@ -743,6 +746,65 @@ export function updateMessagingPlatform(
 export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
+    method: 'POST'
+  })
+}
+
+// --- Agenda (AI-secretary M1) ----------------------------------------------
+// Core routes, not a dashboard plugin: the board is a daily surface and must
+// not depend on `plugins.enabled` (docs/adr/0008-*.md).
+
+export function getAgenda(from?: string, to?: string): Promise<AgendaEvent[]> {
+  const query = new URLSearchParams()
+
+  if (from) {
+    query.set('from', from)
+  }
+
+  if (to) {
+    query.set('to', to)
+  }
+
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+
+  return window.hermesDesktop.api<AgendaEvent[]>({ path: `/api/agenda${suffix}` })
+}
+
+export function getPendingAgenda(): Promise<AgendaEvent[]> {
+  return window.hermesDesktop.api<AgendaEvent[]>({ path: '/api/agenda/pending' })
+}
+
+export function createAgendaEvent(body: AgendaEventCreate): Promise<AgendaEvent> {
+  return window.hermesDesktop.api<AgendaEvent>({ path: '/api/agenda', method: 'POST', body })
+}
+
+export function updateAgendaEvent(eventId: string, body: AgendaEventPatch): Promise<AgendaEvent> {
+  return window.hermesDesktop.api<AgendaEvent>({
+    path: `/api/agenda/${encodeURIComponent(eventId)}`,
+    method: 'PATCH',
+    body
+  })
+}
+
+export function deleteAgendaEvent(eventId: string): Promise<{ id: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ id: string; ok: boolean }>({
+    path: `/api/agenda/${encodeURIComponent(eventId)}`,
+    method: 'DELETE'
+  })
+}
+
+export function confirmAgendaEvent(eventId: string): Promise<AgendaEvent> {
+  return window.hermesDesktop.api<AgendaEvent>({
+    path: `/api/agenda/${encodeURIComponent(eventId)}/confirm`,
+    method: 'POST'
+  })
+}
+
+// Dismissing a proposed (brand-new) event deletes it, so the backend answers
+// with `{deleted: true}` instead of a row.
+export function dismissAgendaEvent(eventId: string): Promise<AgendaEvent | { deleted: true; id: string; ok: boolean }> {
+  return window.hermesDesktop.api<AgendaEvent | { deleted: true; id: string; ok: boolean }>({
+    path: `/api/agenda/${encodeURIComponent(eventId)}/dismiss`,
     method: 'POST'
   })
 }

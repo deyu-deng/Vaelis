@@ -1,5 +1,6 @@
 export const SESSION_ROUTE_PREFIX = '/'
 export const NEW_CHAT_ROUTE = '/'
+export const AGENDA_ROUTE = '/agenda'
 export const SETTINGS_ROUTE = '/settings'
 export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
@@ -11,6 +12,7 @@ export const AGENTS_ROUTE = '/agents'
 export const STARMAP_ROUTE = '/starmap'
 
 export type AppView =
+  | 'agenda'
   | 'agents'
   | 'artifacts'
   | 'chat'
@@ -23,6 +25,7 @@ export type AppView =
   | 'starmap'
 
 export type AppRouteId =
+  | 'agenda'
   | 'agents'
   | 'artifacts'
   | 'command-center'
@@ -48,6 +51,7 @@ export const APP_ROUTES = [
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
+  { id: 'agenda', path: AGENDA_ROUTE, view: 'agenda' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
   { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
@@ -60,6 +64,7 @@ const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => rout
 // While one is open the app's titlebar control clusters must hide so they don't
 // bleed over the overlay (they sit at a higher z-index than the overlay card).
 export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
+  'agenda',
   'agents',
   'command-center',
   'cron',

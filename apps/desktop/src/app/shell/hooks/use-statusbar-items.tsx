@@ -35,7 +35,9 @@ import {
 } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
-import { CRON_ROUTE } from '../../routes'
+import { $agendaPendingCount } from '@/store/agenda'
+
+import { AGENDA_ROUTE, CRON_ROUTE } from '../../routes'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
@@ -80,6 +82,7 @@ export function useStatusbarItems({
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
   const subagentsBySession = useStore($subagentsBySession)
+  const agendaPendingCount = useStore($agendaPendingCount)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
   const backendUpdateStatus = useStore($backendUpdateStatus)
@@ -331,9 +334,22 @@ export function useStatusbarItems({
         title: copy.openCron,
         to: CRON_ROUTE,
         variant: 'action'
+      },
+      {
+        // Pending entries are the one thing the user must act on, so the
+        // count rides in the statusbar rather than hiding inside the board.
+        className: cn(agendaPendingCount > 0 && 'text-amber-500 hover:text-amber-500'),
+        detail: agendaPendingCount > 0 ? copy.agendaPending(agendaPendingCount) : undefined,
+        icon: <Codicon name="calendar" size="0.75rem" />,
+        id: 'agenda',
+        label: copy.agenda,
+        title: copy.openAgenda,
+        to: AGENDA_ROUTE,
+        variant: 'action'
       }
     ],
     [
+      agendaPendingCount,
       agentsOpen,
       commandCenterOpen,
       copy,

@@ -43,7 +43,7 @@ import {
   $currentProvider,
   $currentReasoningEffort
 } from '@/store/session'
-import { desktopQuotaProviders } from '@/store/desktop-quotas'
+import { desktopQuotaProviders, isDesktopQuotaProvider } from '@/store/desktop-quotas'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
@@ -90,11 +90,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, sessionId: activeSessionId })
   })
 
-  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
-    !!activeSessionId,
-    { model: currentModel, provider: currentProvider },
-    modelOptions.data
-  )
+  // Desktop-quota providers (Antigravity/…) route to the local aigw hub, so the
+  // gateway's `model.options` (which reports the Hermes default, not the user's
+  // picked desktop-quota model) must not win the "current" highlight. When the
+  // active provider is one of these, the sticky local selection is authoritative.
+  const isDesktopQuota = isDesktopQuotaProvider(currentProvider)
+  const { model: optionsModel, provider: optionsProvider } = isDesktopQuota
+    ? { model: currentModel, provider: currentProvider }
+    : currentPickerSelection(
+        !!activeSessionId,
+        { model: currentModel, provider: currentProvider },
+        modelOptions.data
+      )
 
   const loading = modelOptions.isPending && !modelOptions.data
 

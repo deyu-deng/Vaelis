@@ -16,13 +16,13 @@ The manager never talks to upstreams itself; it delegates refresh to each provid
 `ensure_fresh`, exactly like the scheduler does on dispatch. That keeps a single
 refresh code path (cursor / antigravity / workbuddy each know their own OAuth flow).
 """
+
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
 
-from ..providers.base import Account, Provider, UpstreamError, AccountState
+from ..providers.base import Account, AccountState, Provider, UpstreamError
 
 
 class Health:
@@ -33,11 +33,15 @@ class Health:
 
 
 class TokenManager:
-    def __init__(self, providers: dict[str, Provider], *,
-                 vault: Optional["object"] = None,
-                 preempt_sec: float = 300.0,
-                 refresh_interval: float = 120.0,
-                 persist: bool = False):
+    def __init__(
+        self,
+        providers: dict[str, Provider],
+        *,
+        vault: object | None = None,
+        preempt_sec: float = 300.0,
+        refresh_interval: float = 120.0,
+        persist: bool = False,
+    ):
         self.providers = providers
         self.vault = vault
         self.preempt_sec = preempt_sec
@@ -45,7 +49,7 @@ class TokenManager:
         self.persist = persist and vault is not None
         self.last_used: dict[str, float] = {}
         self.health: dict[str, str] = {}
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
     # --- enumeration -----------------------------------------------------
@@ -84,13 +88,17 @@ class TokenManager:
             for provider, account in list(self._iter()):
                 # a dead/disappeared account needs a user re-login, not a retry storm
                 if account.state in (AccountState.REAUTH, AccountState.DISABLED):
-                    self.health[account.id] = (Health.DEAD if account.state == AccountState.REAUTH
-                                               else Health.DEGRADED)
+                    self.health[account.id] = (
+                        Health.DEAD if account.state == AccountState.REAUTH else Health.DEGRADED
+                    )
                     continue
                 cred = account.cred
                 # refresh when: no token yet, expiry unknown (0), or expiring soon
-                if (not cred.access_token or cred.expires_at == 0
-                        or cred.is_expired(self.preempt_sec)):
+                if (
+                    not cred.access_token
+                    or cred.expires_at == 0
+                    or cred.is_expired(self.preempt_sec)
+                ):
                     await self._refresh_one(provider, account)
             if self.persist:
                 self._persist()

@@ -17,20 +17,31 @@ Cloud Code 包装 / 429 退避轮询），并用 mitmproxy 做协议逆向发现
 
 ## 已验证 vs. 待打通（诚实清单）
 
-| 部分 | 状态 | 说明 |
-|---|---|---|
-| 网关骨架（FastAPI/OpenAI 接口/鉴权/健康检查） | ✅ 已跑通 | TestClient 验证：401 拦截、`/v1/models`、`/healthz` |
-| 调度器（粘性会话 / 失败转移 / 跨 provider / 429 熔断退避 / 流式并发槽） | ✅ 已跑通 | 单元测试验证 sticky + failover + 跨 provider + stream |
-| Token Manager（加密保险库 + 后台刷新 + 每 app 健康/last_used） | ✅ 已跑通 | Vault 加解密 round-trip + 后台刷新单测通过 |
-| Cursor token 读取（`state.vscdb`）与刷新端点 | ✅ 路径/密钥已核实 | 本机实测**读到了真实 token**；刷新走 `api2.cursor.sh/oauth/token` |
-| Antigravity token 读取（`~/.antigravity/db.sqlite`）| ✅ 路径已核实 | 本机未装该应用；读取逻辑已就绪 |
-| **Cursor 对话协议** | ⚠️ 需逆向 | 是 gRPC/Connect **protobuf**（`aiserver.v1.ChatService`）+ `x-cursor-checksum` 风控头，**非 REST**。用 `aigw discover` 抓 `.proto` 后生成 `cursor_pb2` 再实现 |
-| **Antigravity Cloud Code 请求封套** | ⚠️ 需核实 | Gemini 翻译已写好；Cloud Code 的 URL 前缀/project 封套已做成 config 驱动（`cloudcode.*`），需 mitm 确认真实形状 |
-| **Workbuddy 内部 API** | ⚠️ 无公开资料 | config 驱动的通用透传 + header 模板 + anthropic dialect；端点/鉴权抓包后填 `config.yaml` |
-| **Mock provider（本地回显/静态/故障注入）** | ✅ 已跑通 | 零网络、零厂商账号；全栈 e2e 测试 8 项通过（鉴权/模型/健康/流式 SSE/404/跨账号失败转移/reauth 熔断） |
+路线图例：**spawn-CLI** = spawn 本地已装 CLI 子进程（合规）；**GUI** = Windows UI
+自动化驱动桌面端（合规，灰区）；**reverse** = 抓包/逆向桌面端 token/API（非合规，仅个人研究）。
 
-代码里所有需要抓包确认的点都标了 `# VERIFY`。**"存在≠能用"**——上游调用要跑通，必须先用下面的
-mitm 工具把这些点填实。
+| 组件 | 路线 | 状态 | 说明 |
+|---|---|---|---|
+| 网关骨架（FastAPI/OpenAI 接口/鉴权/健康检查） | — | ✅ 已跑通 | TestClient 验证：401 拦截、`/v1/models`、`/healthz` |
+| 调度器（粘性会话 / 失败转移 / 跨 provider / 429 熔断退避 / 流式并发槽） | — | ✅ 已跑通 | 单元测试验证 sticky + failover + 跨 provider + stream |
+| Token Manager（加密保险库 + 后台刷新 + 每 app 健康/last_used） | — | ✅ 已跑通 | Vault 加解密 round-trip + 后台刷新单测通过 |
+| **antigravity_cli**（spawn `agy`） | spawn-CLI | ✅ 骨架+测试通过 | 用假 `agy` 跑通 spawn→抓输出→OpenAI 翻译；本机需装 `agy` 真跑 |
+| **workbuddy**（hybrid 优先 CLI 回退 GUI） | spawn-CLI→GUI | ✅ 逻辑+测试通过 | 用假 CLI 验证"优先 CLI、无则回退 GUI"；GUI 部分需 Windows |
+| **workbuddy_cli**（spawn `workbuddy` CLI） | spawn-CLI | ✅ 骨架+测试通过 | config 驱动；本机需装对应 CLI |
+| **marvis_cli**（任意带 CLI 的 Marvis） | spawn-CLI | ✅ 测试通过 | config 驱动；覆盖 openmarvis/marvisx-cli 等 |
+| **workbuddy_gui**（Workbuddy 桌面端） | GUI | 🧪 骨架 | 需 Windows GUI + `aigw workbuddy-dump` 抓选择器 |
+| **marvis_gui**（腾讯 Marvis 桌面端） | GUI | 🧪 骨架 | 需 Windows GUI + `aigw marvis-dump` 抓选择器 |
+| **Cursor token 读取（`state.vscdb`）+ 刷新** | reverse | ✅ 路径/密钥已核实 | 本机实测**读到了真实 token**；刷新走 `api2.cursor.sh/oauth/token` |
+| **Cursor 对话协议** | reverse | ⚠️ 需逆向 | gRPC/Connect **protobuf**（`aiserver.v1.ChatService`）+ `x-cursor-checksum`；抓 `.proto`→`protoc`→`use_proto`。见 `docs/CURSOR_INTEGRATION.md` |
+| **Antigravity Cloud Code 请求封套** | reverse | ⚠️ 需核实 | Gemini 翻译已写好；URL 前缀/project 封套 config 驱动（`cloudcode.*`），需 mitm 确认真实形状 |
+| **workbuddy_api**（HTTP 透传兜底） | reverse* | ⚠️ 占位 | 仅当你**自带 API key** 调干净的 HTTP API 才合规；默认关闭 |
+| **Mock provider（本地回显/静态/故障注入）** | — | ✅ 已跑通 | 零网络、零厂商账号；全栈 e2e 测试通过 |
+
+> `reverse*`：workbuddy_api 本身不偷 token，但逆向内部 API 仍属灰区；合规做法是走
+> `workbuddy_cli` / `workbuddy_gui`。
+>
+> 代码里所有需要抓包确认的点都标了 `# VERIFY`。**"存在≠能用"**——上游调用要跑通，必须先把
+> 这些点填实（spawn-CLI / GUI 路线只需本机装好对应程序；reverse 路线需 mitm 抓包）。
 
 ---
 
@@ -66,10 +77,18 @@ providers:
 
 ```bash
 cd aigw
-cp config.example.yaml config.yaml          # 或粘上面的最小配置
+# 推荐：安全档（仅 mock + 本机 CLI；reverse/GUI 默认关）
+python -m aigw start --config profiles/safe.yaml
+
+# 或完整示例配置（研究用，含 reverse 说明；reverse 默认 enabled:false）
+cp config.example.yaml config.yaml
 python -m aigw start                        # 默认 127.0.0.1:8000
 # 自定义：python -m aigw start --config config.yaml --host 127.0.0.1 --port 8000
 ```
+
+`GET /v1/models` 会附带每个模型的 `provider` 与 `capabilities`
+（`stream` / `tools` / `vision` / `embeddings` / `sessionful` / `compliance`），
+供 Vaelis 桌面与 Hermes 按能力过滤。多轮对话请传 `x-session-id` 做账号粘性。
 
 `aigw start` 用 uvicorn 拉起 FastAPI app，`--host/--port` 优先于 `server` 段；日志默认
 INFO 打到控制台（可在 `logging.file` 指定文件落盘）。
@@ -115,7 +134,8 @@ print(c.embeddings.create(model="mock/embedding", input="hello world").data[0].e
 ### 5) 跑测试
 
 ```bash
-python -m pytest aigw/tests/test_gateway_e2e.py -v   # 9 项：鉴权/模型/健康/流式/404/失败转移/reauth/embeddings
+python -m pytest aigw/tests/test_cli_provider.py -v   # 10 项：spawn-CLI / GUI 优雅禁用 / hybrid 优先 CLI
+python -m aigw.tests.test_cli_provider               # 同上，无需 pytest
 ```
 
 `mock` 的账号支持 `mode: echo | static | fail | dead`，可分别复现"正常回复 / 固定回复 /
@@ -126,27 +146,35 @@ provider 之前把调度与熔断逻辑压实。
 
 ## 从 mock 到真实上游（迁移 checklist）
 
-mock 只证明管线和调度可用。**真实额度聚合必须抓包填实协议**，否则上游调用会 501/失败。
-一步步来：
+mock 只证明管线和调度可用。接真实额度有 **三条路线**，优先合规路线：
 
-- [ ] **1. 选目标 app**：Cursor / Antigravity / Workbuddy 三选一，逐个打通，别一次全开。
-- [ ] **2. 只读扫描**：`aigw discover --scan` 确认本机已登录会话能被读到
-      （Cursor `state.vscdb`、Antigravity `db.sqlite`）。读不到就先登录对应客户端。
-- [ ] **3. 抓真实流量**：`aigw discover --app cursor --yes`（默认 dry-run，需 `--yes` 才真正
-      起 mitmdump）。按提示用 `NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem` 把目标
-      app 走代理启动，手动发几条消息。
-- [ ] **4. 看报告**：`aigw discover --report captures/<app>` 生成 Markdown，重点记录
-      - 真实 chat 端点 host + path（核对代码里标 `# VERIFY` 的默认值）
-      - 鉴权/风控头（`x-cursor-checksum`、client-metadata 等）→ 填进 config 的
-        `extra_headers` / `header_templates`
-      - 请求体结构（Cursor 是 Connect gRPC/protobuf，需抓 `.proto` 后用 `protoc` 生成
-        `cursor_pb2`，再置 `cursor.use_proto: true`；或提供 `connect_json_body_template`）
-- [ ] **5. 填 config**：把上面三点写进 `config.yaml` 对应 provider 段，关闭 mock 或并存。
-- [ ] **6. 小流量试跑**：用上面的 curl/SDK 打真实模型（如 `cursor/gpt-4o`），确认返回 200
-      且内容是真实回复；观察 `/healthz` 账号状态与 token 健康。
-- [ ] **7. 开启保险库（可选）**：`vault.enabled: true` 加密落盘 token，后台预刷新。
-- [ ] **8. 持续合规自查**：厂商风控会变，封号风险自担；本工具仅供个人本地研究，不作
-      "长期可用" 保证。抓到的端点/头若失效，回到第 3 步重抓。
+**路线 A — spawn-CLI（合规，首选）**：目标 app 提供 CLI（如 `agy`、任意 Marvis CLI、
+Workbuddy CLI）。
+- [ ] **A1. 装好对应 CLI 并登录**（如 `agy` 首次运行做 OAuth）。
+- [ ] **A2. 确认非交互输出**：`agy -p "hi"` 是否把回复打到 stdout（见各 `*_cli.py` 的 VERIFY 注释）。
+- [ ] **A3. 开 provider**：`antigravity_cli` / `marvis_cli` / `workbuddy_cli`（`enabled: true`，
+      填 `binary` / `prompt_flag` / `model_map`）。CLI 不在 PATH 时自动禁用，可放心并存。
+- [ ] **A4. 小流量试跑**：`curl` 打 `antigravity_cli/gemini-3-pro`，确认返回 200 且内容真实。
+
+**路线 B — GUI 自动化（合规，灰区）**：目标 app 只有桌面 GUI（腾讯 Marvis、Workbuddy 桌面端）。
+- [ ] **B1.** 在 **Windows GUI 机** `pip install -r requirements.gui.txt`，启动并登录 App。
+- [ ] **B2.** `aigw marvis-dump` / `aigw workbuddy-dump` 抓控件树，记下 input / output 选择器。
+- [ ] **B3.** 填 `marvis_gui` / `workbuddy.gui` 段的选择器；provider 无 uiautomation/无窗口时优雅禁用。
+- [ ] **B4.** headless / CI 跑不了；只能在本机有活 GUI 会话时验证。
+
+**路线 C — reverse 抓包（非合规，仅个人研究）**：无 CLI、无 API 又想榨额度时（Cursor、Antigravity
+Cloud Code、Workbuddy 内部 API）。
+- [ ] **C1. 只读扫描**：`aigw discover --scan` 确认本机已登录会话能被读到。
+- [ ] **C2. 抓真实流量**：`aigw discover --app cursor --yes`（需 `--yes` 才真正起 mitmdump）。
+- [ ] **C3. 看报告**：`aigw discover --report captures/<app>`，记录真实端点 / 风控头 / 请求体结构
+      （Cursor 的 `.proto` 抓法见 `docs/CURSOR_INTEGRATION.md`）。
+- [ ] **C4. 填 config**：写进对应 provider 段，关闭 mock 或并存。
+- [ ] **C5. 小流量试跑**：确认返回 200 且内容真实；观察 `/healthz` 账号与 token 健康。
+- [ ] **C6. 合规自查**：厂商风控会变，封号风险自担；仅供个人本地研究，不作"长期可用"保证。
+
+通用收尾（任一路线的路线 A/B/C 之后）：
+- [ ] **开启保险库（可选）**：`vault.enabled: true` 加密落盘 token（仅 reverse 路线需要 token）。
+- [ ] **保持本地**：`server.host: 127.0.0.1`，强 `api_key`，别直接 `0.0.0.0` 暴露。
 
 > 所有"待核实"的点在代码里标了 `# VERIFY`。**存在 ≠ 能用**：未实跑验证的协议翻译一律
 > 视为未完成，宁可 501 报错也不要返回假数据。
@@ -157,19 +185,30 @@ mock 只证明管线和调度可用。**真实额度聚合必须抓包填实协�
 
 ```
 aigw/
+├── profiles/
+│   └── safe.yaml               # 推荐默认：mock + CLI only（reverse OFF）
 ├── aigw/
 │   ├── main.py                 # OpenAI 兼容 HTTP 层（/v1/chat/completions, /v1/models, /healthz）
-│   ├── cli.py                  # 命令行：aigw start / discover / status
+│   ├── cli.py                  # 命令行：aigw start / discover / status / *-dump
 │   ├── __main__.py             # python -m aigw
 │   ├── config.py               # YAML + 环境变量加载
 │   ├── registry.py             # Provider 注册 + 模型路由（含 routing.rules 跨 provider）
 │   ├── scheduler.py            # 账号池调度：粘性/失败转移/跨 provider/熔断/并发槽 + TokenManager 钩子
 │   ├── providers/
 │   │   ├── base.py             # Provider 抽象契约 + Account/Credential/UpstreamError
-│   │   ├── antigravity.py      # OpenAI<->Gemini 翻译 + 可配置 Cloud Code 封套
-│   │   ├── cursor.py           # token 已通；对话协议委托 cursor_proto（需 .proto）
+│   │   ├── cli.py              # CliProvider 基类：spawn 本地 CLI 子进程（opendesign 式）
+│   │   ├── gui.py              # GuiProvider 基类：Windows UI Automation 驱动桌面端
+│   │   ├── antigravity.py      # reverse: OpenAI<->Gemini 翻译 + 可配置 Cloud Code 封套
+│   │   ├── antigravity_cli.py  # spawn-CLI: 官方 `agy`（吃自己的 Google 额度）
+│   │   ├── cursor.py           # reverse: token 已通；对话协议委托 cursor_proto（需 .proto）
 │   │   ├── cursor_proto.py     # Connect/protobuf 客户端占位 + protoc 生成说明
-│   │   └── workbuddy.py        # config 驱动透传 + header 模板 + openai/anthropic dialect
+│   │   ├── marvis_cli.py       # spawn-CLI: 任意带 CLI 的 Marvis（config 驱动）
+│   │   ├── marvis_gui.py       # GUI: 腾讯 Marvis 桌面端（无 CLI/API）
+│   │   ├── workbuddy.py        # reverse 兜底: HTTP 透传（workbuddy_api）
+│   │   ├── workbuddy_cli.py    # spawn-CLI: 任意 Workbuddy CLI
+│   │   ├── workbuddy_gui.py    # GUI: Workbuddy 桌面端
+│   │   ├── workbuddy_hybrid.py # 组合: 优先 CLI 回退 GUI（workbuddy）
+│   │   └── mock.py             # 本地回显/静态/故障注入（dev/demo/e2e）
 │   ├── tokens/
 │   │   ├── desktop_stores.py   # 读桌面端 SQLite（Cursor/Antigravity）+ 刷新流程
 │   │   ├── vault.py            # 加密保险库（keyring / Fernet 文件）
@@ -178,6 +217,9 @@ aigw/
 │       └── cursor.proto        # Cursor 对话 protobuf 骨架（待抓真实字段）
 ├── tools/
 │   └── mitm_discover.py        # mitmproxy addon：抓真实端点/鉴权头/请求体
+├── docs/
+│   ├── CURSOR_INTEGRATION.md   # Cursor 抓包 → protobuf → 集成路径
+│   └── GUI_AUTOMATION.md       # Marvis/Workbuddy 控件抓取步骤
 ├── config.example.yaml
 ├── pyproject.toml
 └── requirements.txt
@@ -192,14 +234,15 @@ aigw/
                                      scheduler.dispatch
                          （选账号→刷新token→熔断/重试/粘性/跨provider）
                                           │
-                    ┌─────────────────────┼─────────────────────┐
-                    ▼                     ▼                     ▼
-             cursor 适配器          antigravity 适配器        workbuddy 适配器
-          (Connect/protobuf)    (Gemini/Cloud Code SSE)     (OpenAI/Anthropic 透传)
-                    │                     │                     │
-              api2.cursor.sh   daily-cloudcode-pa...    你抓包得到的端点
-                                          ▲
-                              TokenManager 后台刷新 + Vault 加密落盘
+        ┌───────────────────┬─────────────┼─────────────┬───────────────────┐
+        ▼                   ▼             ▼             ▼                   ▼
+  cursor 适配器      antigravity 适配器  marvis/wb      marvis_gui /         workbuddy
+ (Connect/protobuf) (Cloud Code SSE)    _cli(spawn)    workbuddy_gui(UIA)   (hybrid:CLI→GUI)
+        │                   │             │             │                   │
+  api2.cursor.sh   daily-cloudcode  CLI 子进程      Windows UI          优先 spawn CLI
+                        -pa...        (吃自身额度)   Automation         回退 GUI 自动化
+                                          ▲                ▲                   ▲
+                              TokenManager 后台刷新 + Vault 加密落盘（reverse 路线才需要 token）
 ```
 
 ## 快速开始
@@ -326,8 +369,10 @@ routing:
 ```bash
 aigw start [--config path] [--host H] [--port P]   # 启动网关
 aigw discover [--scan] [--app cursor|antigravity|workbuddy] [--dry-run|--yes]
-                                                   # 协议发现助手
+                                                   # 协议发现助手（reverse 路线）
 aigw status  [--config path]                        # 查询运行中网关的健康
+aigw marvis-dump [--title "Marvis"] [--depth 8]     # (Windows) 抓 Marvis 控件树
+aigw workbuddy-dump [--title "WorkBuddy"] [--depth 8] # (Windows) 抓 Workbuddy 控件树
 ```
 
 - `discover --scan`：只读，报告本机检测到的登录态。
@@ -335,6 +380,9 @@ aigw status  [--config path]                        # 查询运行中网关的�
   加 `--yes` 才真正拉起拦截；`--app` 指定要看哪个应用的启动片段。
 - `status`：GET 运行中网关的 `/healthz` + `/v1/models`，打印每 app 的 state / 健康 /
   token 剩余有效期 / 最近调用时间。
+- `marvis-dump` / `workbuddy-dump`：在 **Windows GUI 机**打印对应 App 的 UI 控件树
+  （控件类型 / Name / AutomationId / ClassName），用来填 `marvis_gui` / `workbuddy_gui`
+  的 `input` / `output` 选择器。详见 `docs/GUI_AUTOMATION.md`。
 
 ---
 

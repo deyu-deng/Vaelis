@@ -38,18 +38,20 @@ Key headers: Authorization, Content-Type, X-Client-Name, X-Client-Version,
 x-goog-api-client (Google validates this), X-Machine-Session-Id, and for streaming
 Accept: text/event-stream.
 """
+
 from __future__ import annotations
 
 import json
+import logging
 import os
-import re
 import time
 import uuid
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
-from .base import Provider, Account, Credential, AccountState, UpstreamError
 from ..tokens import desktop_stores as ds
+from .base import Account, AccountState, Capabilities, Credential, Provider, UpstreamError
 
+logger = logging.getLogger("aigw.antigravity")
 
 # Antigravity's own client constants (from the reference proxy / gemini-cli).
 DEFAULT_HOST_DAILY = "https://daily-cloudcode-pa.googleapis.com"
@@ -74,17 +76,33 @@ CLIENT_METADATA = {
 
 class AntigravityProvider(Provider):
     name = "antigravity"
-    served_models = (
-        "antigravity/gemini-3-pro",
+    # Reverse / research path: tools+stream work when token is live.
+    default_capabilities = Capabilities(
+        stream=True,
+        tools=True,
+        vision=False,
+        embeddings=False,
+        sessionful=False,
+        compliance="research",
+    )
+    # Seed catalog — used ONLY until a live fetchAvailableModels succeeds. Kept
+    # as a sensible default so routing works before the first refresh (and as a
+    # fallback if the live fetch ever fails). The gateway REPLACES this with the
+    # real Antigravity model list at startup (see refresh_models()), so the
+    # frontend never needs to hardcode model names. The ids below mirror the
+    # real Google Cloud Code Assist catalog (verified 2026-07) so the fallback
+    # is accurate even if the live fetch can't reach Google.
+    _SEED_MODELS = (
         "antigravity/gemini-3-flash",
+        "antigravity/gemini-3-pro-high",
+        "antigravity/gemini-3-pro-low",
+        "antigravity/gemini-3.1-pro-high",
+        "antigravity/gemini-3.1-pro-low",
+        "antigravity/claude-opus-4-6-thinking",
+        "antigravity/claude-opus-4-5-thinking",
         "antigravity/claude-sonnet-4-6",
     )
-
-    MODEL_MAP = {
-        "antigravity/gemini-3-pro": "gemini-3-pro",
-        "antigravity/gemini-3-flash": "gemini-3-flash",
-        "antigravity/claude-sonnet-4-6": "claude-sonnet-4-6",
-    }
+    _SEED_MODEL_MAP = {m: m.split("/", 1)[1] for m in _SEED_MODELS}
 
     def __init__(self, config, http):
         super().__init__(config, http)
@@ -95,6 +113,11 @@ class AntigravityProvider(Provider):
         self.extra_headers = config.get("extra_headers", {})
         # Allow forcing a project id even if loadCodeAssist cannot discover one.
         self.fallback_project = config.get("project_id", "")
+        # Mutable per-instance catalog. Starts from the seed and is overwritten
+        # by the live Antigravity model list once refresh_models() succeeds.
+        self.served_models = list(self._SEED_MODELS)
+        self.MODEL_MAP = dict(self._SEED_MODEL_MAP)
+        self.models_refreshed = False
 
     # --- discovery -------------------------------------------------------
     async def discover_accounts(self) -> list[Account]:
@@ -120,8 +143,12 @@ class AntigravityProvider(Provider):
         env_rt = os.environ.get("ANTIGRAVITY_REFRESH_TOKEN", "")
         if env_rt:
             acc = self._make_account(
-                id="antigravity-env-refresh", label="env ANTIGRAVITY_REFRESH_TOKEN",
-                refresh_token=env_rt, client_id=cid, client_secret=csec)
+                id="antigravity-env-refresh",
+                label="env ANTIGRAVITY_REFRESH_TOKEN",
+                refresh_token=env_rt,
+                client_id=cid,
+                client_secret=csec,
+            )
             if acc is not None:
                 accs.append(acc)
 
@@ -143,20 +170,28 @@ class AntigravityProvider(Provider):
         local = ds.read_antigravity()
         if local and local.get("refresh_token"):
             acc = self._make_account(
-                id="antigravity-local", label="local session (db.sqlite)",
-                refresh_token=local["refresh_token"], client_id=cid, client_secret=csec)
+                id="antigravity-local",
+                label="local session (db.sqlite)",
+                refresh_token=local["refresh_token"],
+                client_id=cid,
+                client_secret=csec,
+            )
             if acc is not None:
                 accs.append(acc)
 
         self.accounts = accs
         return accs
 
-    def _make_account(self, *, id, label, refresh_token, access_token="",
-                      project_id="", client_id, client_secret) -> Optional[Account]:
+    def _make_account(
+        self, *, id, label, refresh_token, access_token="", project_id="", client_id, client_secret
+    ) -> Account | None:
         if not refresh_token and not access_token:
             return None
-        rt, proj, _ = ds.parse_composite_refresh(refresh_token) if refresh_token else (
-            refresh_token, project_id, "")
+        rt, proj, _ = (
+            ds.parse_composite_refresh(refresh_token)
+            if refresh_token
+            else (refresh_token, project_id, "")
+        )
         cred = Credential(
             access_token=access_token,
             refresh_token=rt,
@@ -171,11 +206,14 @@ class AntigravityProvider(Provider):
 
     def _access_only_account(self, id, access_token, client_id, client_secret) -> Account:
         return Account(
-            id=id, provider=self.name, label=id,
+            id=id,
+            provider=self.name,
+            label=id,
             cred=Credential(
                 access_token=access_token,
                 extra={
-                    "client_id": client_id, "client_secret": client_secret,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "project_id": self.fallback_project,
                     "session_id": uuid.uuid4().hex + str(int(time.time())),
                     "no_refresh": True,
@@ -194,10 +232,17 @@ class AntigravityProvider(Provider):
                     return
                 try:
                     res = await ds.refresh_antigravity(
-                        self.http, cred.refresh_token,
-                        cred.extra["client_id"], cred.extra.get("client_secret", ""))
+                        self.http,
+                        cred.refresh_token,
+                        cred.extra["client_id"],
+                        cred.extra.get("client_secret", ""),
+                    )
                 except Exception as e:
-                    raise UpstreamError(401, f"antigravity refresh failed: {e}", reauth=True)
+                    raise UpstreamError(
+                        401,
+                        f"antigravity refresh failed: {type(e).__name__}: {e}",
+                        reauth=True,
+                    )
                 cred.access_token = res["access_token"]
                 cred.expires_at = res["expires_at"]
                 if not cred.extra.get("project_id") and res.get("project_id"):
@@ -205,12 +250,88 @@ class AntigravityProvider(Provider):
             return
         # access-token-only account: cannot refresh
         if not cred.access_token:
-            raise UpstreamError(401, "antigravity: no access token and no refresh token",
-                                reauth=True)
+            raise UpstreamError(
+                401, "antigravity: no access token and no refresh token", reauth=True
+            )
         if cred.is_expired() and cred.extra.get("no_refresh"):
             acc.state = AccountState.REAUTH
-            raise UpstreamError(401, "antigravity: access token expired and no refresh token",
-                                reauth=True)
+            raise UpstreamError(
+                401, "antigravity: access token expired and no refresh token", reauth=True
+            )
+
+    # --- live model catalog (replaces hardcoded names) ------------------
+    async def refresh_models(self, acc: Account) -> list[str] | None:
+        """Fetch the live Antigravity model catalog and replace our served list.
+
+        Returns the new short model ids on success, or ``None`` if the fetch
+        failed (the caller keeps the seed catalog). This method never raises —
+        model-list refresh must not break chat routing, so any transport /
+        auth / parse error is logged and swallowed.
+        """
+        try:
+            await self.ensure_fresh(acc)
+            short_ids = await self.fetch_available_models(acc)
+        except UpstreamError as e:
+            logger.warning("antigravity model refresh skipped: %s", e)
+            return None
+        except Exception as e:  # noqa: BLE001  (any failure → keep seed)
+            logger.warning(
+                "antigravity model refresh failed: %s: %s", type(e).__name__, e
+            )
+            return None
+        if not short_ids:
+            logger.warning("antigravity model refresh returned an empty list; keeping seed")
+            return None
+        self.served_models = tuple(f"antigravity/{m}" for m in short_ids)
+        self.MODEL_MAP = {f"antigravity/{m}": m for m in short_ids}
+        self.models_refreshed = True
+        logger.info("antigravity: live model catalog = %s", self.served_models)
+        return short_ids
+
+    async def fetch_available_models(self, acc: Account) -> list[str]:
+        """Call ``POST /v1internal:fetchAvailableModels`` and return short ids.
+
+        Raises ``UpstreamError`` on transport / auth / parse failure so the
+        caller's ``refresh_models`` can decide whether to keep the seed.
+        """
+        # The model catalog is project-scoped; pass the managed project id when
+        # we can discover it (loadCodeAssist is best-effort and returns "" on
+        # failure, in which case we send an empty body as the API also accepts).
+        pid = ""
+        try:
+            pid = await self._project_id(acc)
+        except Exception:
+            pid = ""
+        body = {"project": pid} if pid else {}
+        url = f"{self.host}/{self.api_version}:fetchAvailableModels"
+        try:
+            r = await self.http.post(
+                url, headers=self._headers(acc.cred.access_token), json=body, timeout=20.0
+            )
+        except Exception as e:  # noqa: BLE001
+            raise UpstreamError(
+                502,
+                f"antigravity: fetchAvailableModels transport {type(e).__name__}: {e}",
+            )
+        if r.status_code == 401:
+            raise UpstreamError(
+                401, "antigravity: fetchAvailableModels unauthorized", reauth=True
+            )
+        if r.status_code != 200:
+            # Surface the body so we can diagnose a 400/403 from the real API.
+            snippet = (r.text or "")[:500]
+            raise UpstreamError(
+                r.status_code,
+                f"antigravity: fetchAvailableModels returned {r.status_code}: {snippet}",
+            )
+        try:
+            data = r.json()
+        except Exception as e:  # noqa: BLE001
+            raise UpstreamError(
+                502,
+                f"antigravity: fetchAvailableModels invalid JSON {type(e).__name__}: {e}",
+            )
+        return _parse_antigravity_models(data)
 
     # --- project discovery ----------------------------------------------
     async def _project_id(self, acc: Account) -> str:
@@ -226,8 +347,9 @@ class AntigravityProvider(Provider):
         url = f"{self.host}/{self.api_version}:loadCodeAssist"
         body = {"metadata": self.client_metadata, "mode": 1}
         try:
-            r = await self.http.post(url, headers=self._headers(acc.cred.access_token),
-                                     json=body, timeout=20.0)
+            r = await self.http.post(
+                url, headers=self._headers(acc.cred.access_token), json=body, timeout=20.0
+            )
         except Exception:
             return ""
         if r.status_code != 200:
@@ -247,8 +369,9 @@ class AntigravityProvider(Provider):
             return f"{self.host}/{self.api_version}:streamGenerateContent?alt=sse"
         return f"{self.host}/{self.api_version}:generateContent"
 
-    def _headers(self, token: str, session_id: str = "", model: str = "",
-                 accept: str = "application/json") -> dict:
+    def _headers(
+        self, token: str, session_id: str = "", model: str = "", accept: str = "application/json"
+    ) -> dict:
         h = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -276,13 +399,19 @@ class AntigravityProvider(Provider):
                 continue
             if role == "tool":
                 # OpenAI tool result -> Gemini functionResponse (user turn)
-                contents.append({
-                    "role": "user",
-                    "parts": [{"functionResponse": {
-                        "name": m.get("name", ""),
-                        "response": {"result": _as_text(m.get("content"))},
-                    }}],
-                })
+                contents.append(
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "functionResponse": {
+                                    "name": m.get("name", ""),
+                                    "response": {"result": _as_text(m.get("content"))},
+                                }
+                            }
+                        ],
+                    }
+                )
                 continue
             parts = []
             if role == "assistant" and m.get("tool_calls"):
@@ -293,8 +422,7 @@ class AntigravityProvider(Provider):
                         args = json.loads(raw) if isinstance(raw, str) else (raw or {})
                     except Exception:
                         args = {}
-                    parts.append({"functionCall": {
-                        "name": fn.get("name", ""), "args": args or {}}})
+                    parts.append({"functionCall": {"name": fn.get("name", ""), "args": args or {}}})
             else:
                 text = _as_text(m.get("content"))
                 if text:
@@ -316,10 +444,13 @@ class AntigravityProvider(Provider):
         if "max_tokens" in oai_req:
             gen["maxOutputTokens"] = oai_req["max_tokens"]
         if self.thinking or oai_req.get("reasoning_effort"):
-            budget = {"minimal": 1024, "low": 4096, "medium": 8192,
-                      "high": 16384}.get(oai_req.get("reasoning_effort"), 8192)
-            gen["thinkingConfig"] = {"thinkingBudget": budget,
-                                     "includeThoughts": bool(self.thinking)}
+            budget = {"minimal": 1024, "low": 4096, "medium": 8192, "high": 16384}.get(
+                oai_req.get("reasoning_effort"), 8192
+            )
+            gen["thinkingConfig"] = {
+                "thinkingBudget": budget,
+                "includeThoughts": bool(self.thinking),
+            }
         if gen:
             body["generationConfig"] = gen
         tools = _to_gemini_tools(oai_req.get("tools"))
@@ -344,9 +475,12 @@ class AntigravityProvider(Provider):
         sid = acc.cred.extra.get("session_id", "")
         model = self._short_model(oai_req["model"])
         payload = self._wrap(oai_req, project, model, sid)
-        r = await self.http.post(self._url(False),
-                                 headers=self._headers(acc.cred.access_token, sid, model),
-                                 json=payload, timeout=120.0)
+        r = await self.http.post(
+            self._url(False),
+            headers=self._headers(acc.cred.access_token, sid, model),
+            json=payload,
+            timeout=120.0,
+        )
         err = self._classify_http(r.status_code)
         if err:
             self._note_quota(acc, r)
@@ -355,9 +489,17 @@ class AntigravityProvider(Provider):
             data = r.json()
         except Exception as e:
             raise UpstreamError(502, f"antigravity: invalid JSON response ({e})")
-        # The API wraps the Gemini payload in a top-level "response" object.
-        data = data.get("response", data)
-        return _gemini_to_oai(data, oai_req["model"], project)
+        # Google returns {"error": {...}} on failure (e.g. region lock 400).
+        if isinstance(data, dict) and "error" in data:
+            e = data["error"]
+            raise UpstreamError(
+                502,
+                f"antigravity upstream: {_describe_google_error(e)}",
+                retryable=False,
+            )
+            # The API wraps the Gemini payload in a top-level "response" object.
+            data = data.get("response", data)
+            return _gemini_to_oai(data, oai_req["model"], project)
 
     async def chat_stream(self, acc: Account, oai_req: dict) -> AsyncIterator[dict]:
         project = await self._project_id(acc)
@@ -365,16 +507,34 @@ class AntigravityProvider(Provider):
         model = self._short_model(oai_req["model"])
         payload = self._wrap(oai_req, project, model, sid)
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        async with self.http.stream("POST", self._url(True),
-                                    headers=self._headers(acc.cred.access_token, sid, model,
-                                                          accept="text/event-stream"),
-                                    json=payload, timeout=120.0) as r:
+        async with self.http.stream(
+            "POST",
+            self._url(True),
+            headers=self._headers(acc.cred.access_token, sid, model, accept="text/event-stream"),
+            json=payload,
+            timeout=120.0,
+        ) as r:
             err = self._classify_http(r.status_code)
             if err:
                 self._note_quota(acc, r)
                 raise err
             async for line in r.aiter_lines():
                 line = line.strip()
+                # Google returns error JSON (e.g. 400 region lock) inside the
+                # SSE stream with status 200; surface it instead of yielding
+                # an empty "successful" completion.
+                if line.startswith("data:") and "[DONE]" not in line:
+                    try:
+                        probe = json.loads(line[5:].strip())
+                        if isinstance(probe, dict) and "error" in probe:
+                            e = probe["error"]
+                            raise UpstreamError(
+                                502,
+                                f"antigravity upstream: {_describe_google_error(e)}",
+                                retryable=False,
+                            )
+                    except (json.JSONDecodeError, UpstreamError):
+                        pass
                 if not line or not line.startswith("data:"):
                     continue
                 payload_s = line[5:].strip()
@@ -401,6 +561,90 @@ class AntigravityProvider(Provider):
 
 
 # --- translation helpers ---------------------------------------------------
+def _parse_antigravity_models(data: object) -> list[str]:
+    """Extract short model ids from a ``fetchAvailableModels`` response.
+
+    The real Google Cloud Code Assist API returns a **record** mapping model
+    id -> quota info::
+
+        {"models": {"gemini-3-pro-high": {"displayName": "...", "quotaInfo": {...}}, ...}}
+
+    We also tolerate the list shapes seen in some reverse-engineered clients::
+
+        {"models": [{"name": "models/gemini-3-pro"}, ...]}
+        {"models": ["gemini-3-pro", ...]}
+        {"availableModels": [...]} / {"available_models": [...]}
+
+    Any ``models/`` or ``publishers/`` catalog prefix is stripped, and internal
+    / placeholder models (``chat_*``, ``rev19*``, ``tab_*``, ``*image*``,
+    embeddings, tts) are dropped so the user only sees real, chattable models.
+    """
+    if not isinstance(data, dict):
+        return []
+    raw = None
+    for key in ("models", "availableModels", "available_models"):
+        v = data.get(key)
+        if v:
+            raw = v
+            break
+    if raw is None:
+        return []
+
+    raw_ids: list[str] = []
+    if isinstance(raw, dict):
+        # Record shape: keys are the model ids.
+        raw_ids.extend(str(k) for k in raw.keys())
+    elif isinstance(raw, list):
+        for item in raw:
+            mid = ""
+            if isinstance(item, str):
+                mid = item
+            elif isinstance(item, dict):
+                mid = (
+                    item.get("name")
+                    or item.get("id")
+                    or item.get("model")
+                    or item.get("modelId")
+                    or ""
+                )
+            if mid:
+                raw_ids.append(str(mid))
+
+    ids: list[str] = []
+    for mid in raw_ids:
+        mid = (mid or "").strip()
+        if not mid:
+            continue
+        # Strip a leading catalog prefix like "models/" / "publishers/".
+        mid = mid.split("/")[-1]
+        low = mid.lower()
+        # Drop internal / non-chat models that real clients filter out.
+        if low.startswith(("chat_", "rev19", "tab_")):
+            continue
+        if any(s in low for s in ("image", "embedding", "tts")):
+            continue
+        if mid and mid not in ids:
+            ids.append(mid)
+    return ids
+
+
+def _describe_google_error(e: dict) -> str:
+    """Human-readable message for a Google ``{"error": {...}}`` payload.
+
+    Google Code Assist rejects calls from unsupported regions with a bare
+    ``FAILED_PRECONDITION`` / ``"User location is not supported for the API use"``
+    — which is the expected failure for mainland-China networks. Surface that
+    clearly instead of a cryptic status string.
+    """
+    msg = (e.get("message") or "unknown error") if isinstance(e, dict) else str(e)
+    if "User location is not supported" in msg or "location is not supported" in msg:
+        return (
+            f"{msg}. Google Code Assist (Antigravity) is not available in this "
+            "region — connect through a compliant overseas network to use it."
+        )
+    return msg
+
+
 def _as_text(content) -> str:
     if content is None:
         return ""
@@ -419,19 +663,21 @@ def _to_gemini_tools(tools):
         if not isinstance(t, dict) or t.get("type") != "function":
             continue
         fn = t.get("function", {})
-        decls.append({
-            "name": fn.get("name", ""),
-            "description": fn.get("description", ""),
-            "parameters": fn.get("parameters", {}),
-        })
+        decls.append(
+            {
+                "name": fn.get("name", ""),
+                "description": fn.get("description", ""),
+                "parameters": fn.get("parameters", {}),
+            }
+        )
     return [{"functionDeclarations": decls}] if decls else None
 
 
 def _extract_gemini_text(obj: dict) -> str:
     try:
-        return "".join(p.get("text", "")
-                       for p in obj["candidates"][0]["content"]["parts"]
-                       if "text" in p)
+        return "".join(
+            p.get("text", "") for p in obj["candidates"][0]["content"]["parts"] if "text" in p
+        )
     except (KeyError, IndexError, TypeError):
         return ""
 
@@ -455,19 +701,20 @@ def _gemini_to_oai(obj: dict, model: str, project: str) -> dict:
                 text_parts.append(p["text"])
             elif "functionCall" in p:
                 fc = p["functionCall"]
-                tool_calls.append({
-                    "id": "call_" + uuid.uuid4().hex[:8],
-                    "type": "function",
-                    "function": {
-                        "name": fc.get("name", ""),
-                        "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": "call_" + uuid.uuid4().hex[:8],
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name", ""),
+                            "arguments": json.dumps(fc.get("args", {}), ensure_ascii=False),
+                        },
+                    }
+                )
     except (KeyError, IndexError, TypeError):
         pass
     usage = obj.get("usageMetadata", {})
-    msg = {"role": "assistant",
-           "content": "".join(text_parts) if text_parts else None}
+    msg = {"role": "assistant", "content": "".join(text_parts) if text_parts else None}
     if tool_calls:
         msg["tool_calls"] = tool_calls
     return {
@@ -475,11 +722,13 @@ def _gemini_to_oai(obj: dict, model: str, project: str) -> dict:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "finish_reason": "tool_calls" if tool_calls else "stop",
-            "message": msg,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls" if tool_calls else "stop",
+                "message": msg,
+            }
+        ],
         "usage": {
             "prompt_tokens": usage.get("promptTokenCount", 0),
             "completion_tokens": usage.get("candidatesTokenCount", 0),
@@ -491,23 +740,37 @@ def _gemini_to_oai(obj: dict, model: str, project: str) -> dict:
 def _chunk(cid: str, model: str, text, finish=None) -> dict:
     delta = {} if text is None else {"content": text}
     return {
-        "id": cid, "object": "chat.completion.chunk",
-        "created": int(time.time()), "model": model,
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }
 
 
 def _tool_chunk(cid: str, model: str, fn: dict) -> dict:
     return {
-        "id": cid, "object": "chat.completion.chunk",
-        "created": int(time.time()), "model": model,
-        "choices": [{"index": 0, "delta": {"tool_calls": [{
-            "index": 0,
-            "id": "call_" + uuid.uuid4().hex[:8],
-            "type": "function",
-            "function": {
-                "name": fn.get("name", ""),
-                "arguments": json.dumps(fn.get("args", {}), ensure_ascii=False),
-            },
-        }]}, "finish_reason": None}],
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_" + uuid.uuid4().hex[:8],
+                            "type": "function",
+                            "function": {
+                                "name": fn.get("name", ""),
+                                "arguments": json.dumps(fn.get("args", {}), ensure_ascii=False),
+                            },
+                        }
+                    ]
+                },
+                "finish_reason": None,
+            }
+        ],
     }

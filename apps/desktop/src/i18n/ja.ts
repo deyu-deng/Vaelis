@@ -1320,6 +1320,53 @@ export const ja = defineLocale({
     failedRename: 'プロファイルの名前変更に失敗しました'
   },
 
+  agenda: {
+    close: '予定を閉じる',
+    title: '予定',
+    loading: '予定を読み込み中...',
+    loadFailed: '予定を読み込めませんでした',
+    count: count => `${count} 件の予定`,
+    pendingCount: count => `${count} 件が確認待ちです`,
+    today: '今日',
+    tomorrow: '明日',
+    emptyTitle: '予定はありません',
+    emptyDesc: 'メッセージから検出された予定がここに表示されます。手動で追加もできます。',
+    newEvent: '新しい予定',
+    edit: '予定を編集',
+    editTitle: '予定を編集',
+    createTitle: '新しい予定',
+    titleField: 'タイトル',
+    titlePlaceholder: 'どんな予定ですか？',
+    titleTimeRequired: 'タイトルと開始時刻は必須です。',
+    startLabel: '開始',
+    kindLabel: '種類',
+    sourceLabel: '取得元',
+    changeLabel: '提案された変更',
+    evidenceLabel: '根拠',
+    confirm: '確認',
+    dismiss: '却下',
+    confirmed: '予定を確認しました',
+    dismissed: '変更を却下しました',
+    deleted: '予定を削除しました',
+    actionFailed: '予定の操作に失敗しました',
+    statuses: {
+      pending: '確認待ち',
+      confirmed: '確認済み',
+      cancelled: 'キャンセル済み'
+    },
+    kinds: {
+      meeting: '会議',
+      ddl: '締め切り',
+      class: '授業',
+      task: 'タスク'
+    },
+    sources: {
+      wechat: 'WeChat',
+      dingtalk: 'DingTalk',
+      manual: '手動追加',
+      timetable: '時間割'
+    }
+  },
   cron: {
     close: 'Cron を閉じる',
     title: 'スケジュール済みジョブ',
@@ -2045,6 +2092,9 @@ export const ja = defineLocale({
       running: count => `${count} 実行中`,
       cron: 'Cron',
       openCron: 'Cron ジョブを開く',
+      agenda: '予定',
+      openAgenda: '予定を開く',
+      agendaPending: count => `${count} 件が確認待ち`,
       starmap: 'メモリグラフ',
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',

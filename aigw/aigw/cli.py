@@ -12,6 +12,7 @@ Design notes / safety:
   - `discover --scan` is read-only: it reads the desktop apps' local credential stores
     the same way the gateway does, and reports what would be found. It changes nothing.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,9 +25,9 @@ import sys
 import time
 from pathlib import Path
 
+from .auth import antigravity_oauth as oa
 from .config import load
 from .tokens import desktop_stores as ds
-from .auth import antigravity_oauth as oa
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / "tools"
 
@@ -56,7 +57,9 @@ def _print_scan() -> None:
     a = ds.read_antigravity()
     print(f"  cursor state.vscdb     : {'FOUND' if ds.cursor_state_db() else 'not installed'}")
     if c:
-        print(f"    -> access token      : present ({'refresh token: yes' if c.get('refresh_token') else 'no refresh'})")
+        print(
+            f"    -> access token      : present ({'refresh token: yes' if c.get('refresh_token') else 'no refresh'})"
+        )
         print(f"    -> email             : {c.get('email') or '(unknown)'}")
     else:
         print("    -> no logged-in cursor session detected")
@@ -72,7 +75,9 @@ def _print_scan() -> None:
     print("    4. keychain gemini/antigravity       (go-keyring blob; needs fresh token)")
     if not a:
         print("    -> no session detected; get one with: aigw auth antigravity")
-    print("  workbuddy              : no local store reader (configure base_url + token in config.yaml)")
+    print(
+        "  workbuddy              : no local store reader (configure base_url + token in config.yaml)"
+    )
     print("\nTo capture the real wire protocol, run: aigw discover --app cursor --yes")
 
 
@@ -83,17 +88,14 @@ def _discover(args) -> int:
 
     # offline report regeneration (no mitmproxy needed)
     if args.report:
-        cmd = [sys.executable, str(TOOLS_DIR / "mitm_discover.py"),
-               "--report", args.report]
+        cmd = [sys.executable, str(TOOLS_DIR / "mitm_discover.py"), "--report", args.report]
         if args.app:
             cmd += ["--app", args.app]
         return subprocess.run(cmd).returncode
 
     addon = TOOLS_DIR / "mitm_discover.py"
     mitmdump = shutil.which("mitmdump") or "mitmdump"
-    cmd = [mitmdump, "-s", str(addon),
-           "--set", f"app={args.app or 'all'}",
-           "--set", "out=captures"]
+    cmd = [mitmdump, "-s", str(addon), "--set", f"app={args.app or 'all'}", "--set", "out=captures"]
     if args.hosts:
         cmd += ["--set", f"hosts={args.hosts}"]
 
@@ -106,14 +108,17 @@ def _discover(args) -> int:
     else:
         print("  (pass --app cursor|antigravity|workbuddy to see the launch snippet)")
     if app == "workbuddy" and not args.hosts:
-        print("  note: Workbuddy's host is unknown — add "
-              "--hosts=host1,host2 (or --set hosts=... when launching).")
+        print(
+            "  note: Workbuddy's host is unknown — add "
+            "--hosts=host1,host2 (or --set hosts=... when launching)."
+        )
 
     if args.dry_run or not args.yes:
-        print("\n[dry-run] no process started. Re-run with --yes to actually "
-              "launch mitmdump.\nAfter capture, regenerate/inspect the report with:\n"
-              f"  aigw discover --report captures/{app or '_all'}"
-              + (f" --app {app}" if app else ""))
+        print(
+            "\n[dry-run] no process started. Re-run with --yes to actually "
+            "launch mitmdump.\nAfter capture, regenerate/inspect the report with:\n"
+            f"  aigw discover --report captures/{app or '_all'}" + (f" --app {app}" if app else "")
+        )
         return 0
 
     print("\n[launching] mitmdump ...")
@@ -128,20 +133,28 @@ def _start(args) -> int:
     if args.config:
         os.environ["AIGW_CONFIG"] = str(Path(args.config).resolve())
     try:
-        import uvicorn  # type: ignore
+        import uvicorn
     except ImportError:
         print("uvicorn not installed. Run: pip install -r requirements.txt", file=sys.stderr)
         return 1
-    cfg = load()
+    from .config import resolve_config_path
+
+    cfg_path = resolve_config_path(args.config)
+    try:
+        cfg = load(str(cfg_path) if args.config else None)
+    except FileNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        return 1
     host = args.host or cfg["server"].get("host", "127.0.0.1")
     port = args.port or cfg["server"].get("port", 8000)
     # configure logging before uvicorn takes over the root logger
     from .main import setup_logging
+
     setup_logging(cfg.get("logging"))
-    logging.getLogger("aigw").info("starting on http://%s:%s", host, port)
+    logging.getLogger("aigw").info("starting on http://%s:%s config=%s", host, port, cfg_path)
+    print(f"[aigw] config: {cfg_path}")
     print(f"[aigw] starting on http://{host}:{port}")
-    uvicorn.run("aigw.main:app", host=host, port=port,
-                log_level="info", loop="asyncio")
+    uvicorn.run("aigw.main:app", host=host, port=port, log_level="info", loop="asyncio")
     return 0
 
 
@@ -160,8 +173,7 @@ def _status(args) -> int:
     import urllib.request
 
     def get(path: str):
-        req = urllib.request.Request(base + path,
-                                     headers={"Authorization": f"Bearer {api_key}"})
+        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {api_key}"})
         with urllib.request.urlopen(req, timeout=5) as r:
             return json.loads(r.read().decode())
 
@@ -178,19 +190,22 @@ def _status(args) -> int:
             continue
         print(f"[{prov}]")
         for acc in accounts:
-            print(f"  - {acc['id']:<18} state={acc['state']:<9} fails={acc['fail']} "
-                  f"quota={acc.get('quota')}")
+            print(
+                f"  - {acc['id']:<18} state={acc['state']:<9} fails={acc['fail']} "
+                f"quota={acc.get('quota')}"
+            )
     tokens = hz.get("tokens")
     if tokens:
         print("[token health]")
-        now = time.time()
         for aid, info in tokens.items():
             exp = info.get("expires_in_sec")
             exp_s = f"{exp}s" if isinstance(exp, int) else "n/a"
             lu = info.get("last_used")
             lu_s = time.strftime("%H:%M:%S", time.localtime(lu)) if lu else "never"
-            print(f"  - {aid:<18} health={info.get('health'):<9} "
-                  f"expires_in={exp_s:<8} last_used={lu_s}")
+            print(
+                f"  - {aid:<18} health={info.get('health'):<9} "
+                f"expires_in={exp_s:<8} last_used={lu_s}"
+            )
     return 0
 
 
@@ -218,14 +233,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     dp = sub.add_parser("discover", help="protocol-discovery helper (mitmproxy)")
     dp.add_argument("--scan", action="store_true", help="read-only: report detected local sessions")
-    dp.add_argument("--app", choices=list(LAUNCH_SNIPPETS), default=None,
-                    help="target app to filter capture (cursor|antigravity|workbuddy)")
-    dp.add_argument("--hosts", default=None,
-                    help="extra upstream hosts to capture (comma-separated); "
-                         "needed for workbuddy whose host is unknown")
-    dp.add_argument("--report", default=None,
-                    help="regenerate the discovery report from a captured dir "
-                         "(offline, no mitmproxy)")
+    dp.add_argument(
+        "--app",
+        choices=list(LAUNCH_SNIPPETS),
+        default=None,
+        help="target app to filter capture (cursor|antigravity|workbuddy)",
+    )
+    dp.add_argument(
+        "--hosts",
+        default=None,
+        help="extra upstream hosts to capture (comma-separated); "
+        "needed for workbuddy whose host is unknown",
+    )
+    dp.add_argument(
+        "--report",
+        default=None,
+        help="regenerate the discovery report from a captured dir (offline, no mitmproxy)",
+    )
     dp.add_argument("--dry-run", action="store_true", help="print commands, do not execute")
     dp.add_argument("--yes", action="store_true", help="actually launch mitmdump")
     dp.set_defaults(func=_discover)
@@ -235,10 +259,83 @@ def build_parser() -> argparse.ArgumentParser:
     stp.set_defaults(func=_status)
 
     ap = sub.add_parser("auth", help="OAuth bootstrap — obtain a provider refresh token")
-    ap.add_argument("app", nargs="?", default="antigravity",
-                    choices=["antigravity"], help="provider to bootstrap")
+    ap.add_argument(
+        "app",
+        nargs="?",
+        default="antigravity",
+        choices=["antigravity"],
+        help="provider to bootstrap",
+    )
     ap.set_defaults(func=_auth)
+
+    mp = sub.add_parser(
+        "marvis-dump", help="(Windows) print Marvis's UI control tree for selector discovery"
+    )
+    mp.add_argument(
+        "--title", default="Marvis", help="substring/regex of the Marvis main window title"
+    )
+    mp.add_argument("--depth", type=int, default=8, help="how deep to walk the control tree")
+    mp.set_defaults(func=_marvis_dump)
+
+    wp = sub.add_parser(
+        "workbuddy-dump", help="(Windows) print Workbuddy's UI control tree for selector discovery"
+    )
+    wp.add_argument(
+        "--title", default="WorkBuddy", help="substring/regex of the Workbuddy main window title"
+    )
+    wp.add_argument("--depth", type=int, default=8, help="how deep to walk the control tree")
+    wp.set_defaults(func=_gui_dump)
     return p
+
+
+def _gui_dump(args) -> int:
+    label = getattr(args, "_label", "GUI")
+    try:
+        import uiautomation as auto
+    except Exception:
+        print(
+            "[gui-dump] `uiautomation` not installed. On Windows run:\n"
+            "    pip install -r requirements.gui.txt",
+            file=sys.stderr,
+        )
+        return 1
+    win = auto.WindowControl(RegexName=args.title, searchDepth=1)
+    if not win.Exists():
+        win = auto.WindowControl(Name=args.title, searchDepth=1)
+    if not win.Exists():
+        print(
+            f"[gui-dump] no window matching '{args.title}' found. "
+            f"Is the app running and logged in?",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"== {label} UI control tree (window: {win.Name}) ==")
+    print(
+        f"Use these to fill `input` / `output` in config.yaml's "
+        f"{label.lower().replace(' ', '_')}_gui section.\n"
+    )
+
+    def walk(ctl, depth: int):
+        if depth > args.depth:
+            return
+        indent = "  " * depth
+        name = (ctl.Name or "").replace("\n", " ")
+        aid = getattr(ctl, "AutomationId", "") or ""
+        cls = getattr(ctl, "ClassName", "") or ""
+        ctype = type(ctl).__name__
+        print(f"{indent}{ctype}  Name={name!r}  AutomationId={aid!r}  ClassName={cls!r}")
+        for child in ctl.GetChildren():
+            walk(child, depth + 1)
+
+    for child in win.GetChildren():
+        walk(child, 0)
+    return 0
+
+
+def _marvis_dump(args) -> int:
+    args._label = "Marvis"
+    return _gui_dump(args)
 
 
 def main(argv=None) -> int:

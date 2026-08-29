@@ -21,7 +21,12 @@ import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualProviderOAuth } from '@/store/onboarding'
-import { DESKTOP_QUOTA_MODELS, markConnected } from '@/store/desktop-quotas'
+import {
+  DESKTOP_QUOTA_MODELS,
+  markConnected,
+  refreshAllConnectedAppModels,
+  refreshConnectedAppModels
+} from '@/store/desktop-quotas'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 import { isKeyVar, ProviderKeyRows, CREDENTIAL_CONTROL_CLASS } from './credential-key-ui'
@@ -51,9 +56,10 @@ export const PROVIDER_VIEWS = ['accounts', 'keys', 'desktop'] as const
 // the backend aigw registry (PROVIDER_CLASSES in aigw/registry.py) is the
 // source of truth and should stay in sync with it.
 //
-// `verified` reflects whether aigw's token-capture adapter for that app has
-// been proven end-to-end. Per aigw/registry.py, cursor/antigravity/workbuddy
-// all still carry `# VERIFY` markers, so none are wired yet.
+// `verified` reflects whether aigw's adapter for that app is wired into the
+// desktop connect flow. Antigravity uses the token route (Google OAuth via
+// `aigw auth antigravity`); cursor and workbuddy ride on the user's already
+// logged-in local session (no OAuth) via their aigw providers.
 interface DesktopQuotaApp {
   id: string
   name: string
@@ -65,20 +71,20 @@ const DESKTOP_QUOTA_APPS: DesktopQuotaApp[] = [
   {
     id: 'antigravity',
     name: 'Antigravity',
-    description: 'Google agent platform — Gemini 3.x models via your Google account.',
-    verified: true   // backend auth flow verified end-to-end (2026-07-13)
+    description: 'Google agent platform — Gemini models via your Google account (OAuth sign-in).',
+    verified: true   // token route wired: aigw auth antigravity -> gateway
   },
   {
     id: 'cursor',
     name: 'Cursor',
-    description: 'Cursor agent — routes through your Cursor subscription quota.',
-    verified: false  // protobuf reverse-engineering not yet completed
+    description: 'Cursor agent — routes through your Cursor subscription quota (reads your local Cursor session, no sign-in needed).',
+    verified: true   // local-session route wired: aigw cursor provider -> gateway on 8021
   },
   {
     id: 'workbuddy',
     name: 'Workbuddy',
-    description: 'Workbuddy desktop agent — config-driven endpoint passthrough.',
-    verified: false  // upstream host / token capture not yet identified
+    description: 'Workbuddy desktop agent — routes through your local Workbuddy (CLI or Desktop) quota, no sign-in needed.',
+    verified: true   // hybrid CLI/GUI route wired: aigw workbuddy provider -> gateway on 8020
   }
 ]
 
@@ -347,25 +353,43 @@ function DesktopQuotasView() {
   // Per-app connection state: idle | connecting | connected | error
   type ConnState = 'idle' | 'connecting' | 'connected' | 'error'
   const [conn, setConn] = useState<Record<string, ConnState>>({})
+  // Per-app failure detail surfaced in the error affordance.
+  const [errInfo, setErrInfo] = useState<Record<string, { code?: string; message?: string; installHint?: string }>>({})
 
-  // --- OAuth connect handler (Antigravity only, verified) ---
+  // Keep the model list fresh: re-fetch each connected app's live catalog from
+  // its aigw gateway whenever this view is opened (the gateway may have started
+  // with a newly-discovered upstream model list since the last connect).
+  useEffect(() => {
+    void refreshAllConnectedAppModels()
+  }, [])
+
+  // --- Connect handler (Antigravity via the compliant `agy` CLI route) ---
+  // The backend does NOT run an OAuth flow. It verifies the user's own `agy`
+  // CLI is installed and starts the local gateway. No token is returned, so
+  // success is keyed on `res.ok` alone.
   const handleConnect = async (appId: string) => {
     if (!window.hermesDesktop?.vaelisGateway?.auth) return
     setConn((prev) => ({ ...prev, [appId]: 'connecting' }))
+    setErrInfo((prev) => { const n = { ...prev }; delete n[appId]; return n })
     try {
       const res = await window.hermesDesktop.vaelisGateway.auth(appId)
-      if (res.ok && res.token) {
+      if (res.ok) {
         // Persist the connected app so its models surface in the chat selector
         // (see store/desktop-quotas) and the gateway baseUrl for live routing.
+        // The api key is per-app (sk-local-<appId>) — never the Antigravity one.
         markConnected({
           id: appId,
           models: res.models ?? DESKTOP_QUOTA_MODELS[appId],
           baseUrl: res.baseUrl,
-          apiKey: 'sk-local-antigravity'
+          apiKey: `sk-local-${appId}`
         })
         setConn((prev) => ({ ...prev, [appId]: 'connected' }))
+        // Replace the placeholder/fallback list with the gateway's live catalog
+        // (the gateway discovers the real models from upstream at startup).
+        void refreshConnectedAppModels(appId)
       } else {
         setConn((prev) => ({ ...prev, [appId]: 'error' }))
+        setErrInfo((prev) => ({ ...prev, [appId]: { code: res.code, message: res.error, installHint: res.installHint } }))
       }
     } catch {
       setConn((prev) => ({ ...prev, [appId]: 'error' }))
@@ -452,7 +476,7 @@ function DesktopQuotasView() {
                     disabled={!canConnect}
                     size="sm"
                     title={
-                      isConnecting ? '正在打开浏览器登录…'
+                      isConnecting ? `正在启动本地 ${app.name} 网关…`
                         : isConnected ? dq.connected
                         : !app.verified ? dq.notVerified
                         : dq.connect
@@ -471,15 +495,26 @@ function DesktopQuotasView() {
                   <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
                     {app.description}
                   </p>
-                  {hasError && (
-                    <p className="text-xs text-red-600 dark:text-red-400">
-                      登录失败或被取消。请重试，或检查终端日志。
-                    </p>
-                  )}
+                  {hasError && (() => {
+                    const info = errInfo[app.id]
+                    if (info?.code === 'AUTH_FAILED' || info?.code === 'AUTH_ERROR') {
+                      return (
+                        <div className="text-xs text-red-600 dark:text-red-400">
+                          <p>Google 登录未完成或被拒绝，请重试。</p>
+                          {info.message && (
+                            <pre className="mt-1 overflow-x-auto rounded bg-(--ui-bg-quaternary) px-2 py-1 text-[0.7rem] leading-5 text-(--ui-text-secondary)">{info.message}</pre>
+                          )}
+                        </div>
+                      )
+                    }
+                    return <p className="text-xs text-red-600 dark:text-red-400">连接失败，请重试，或检查终端日志。</p>
+                  })()}
                   {isConnecting && (
                     <p className="flex items-center gap-1.5 text-xs text-(--ui-text-secondary)">
                       <Loader2 className="size-3 animate-spin" />
-                      浏览器已打开 — 请用 Google 账号登录并授权。
+                      {app.id === 'antigravity'
+                        ? '正在通过 Google 登录连接 Antigravity。首次连接会打开浏览器让你登录 Google 账号。'
+                        : `正在连接本地 ${app.name} 网关，使用你已登录的 ${app.name} 配额。`}
                     </p>
                   )}
                 </div>

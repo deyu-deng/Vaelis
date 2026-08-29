@@ -33,12 +33,12 @@ Electron apps talk HTTPS via Node's http(s) module. To decrypt:
 Cursor chat is gRPC/Connect protobuf (aiserver.v1.*). Antigravity routes through
 daily-cloudcode-pa.sandbox.googleapis.com (Cloud Code envelope over Gemini).
 """
+
 from __future__ import annotations
 
 import argparse
 import base64
 import json
-import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -78,15 +78,26 @@ APP_PROFILES = {
 }
 
 # Headers whose *values* are secrets — mask them in the report.
-MASK_VALUE = {"authorization", "cookie", "proxy-authorization", "x-auth-token",
-              "x-amz-security-token"}
+MASK_VALUE = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-auth-token",
+    "x-amz-security-token",
+}
 # Headers that are derived per-request (do NOT hardcode; explain in checklist).
-COMPUTED_HEADERS = {"x-cursor-checksum", "x-cursor-signature", "x-request-id",
-                    "x-goog-trace-id"}
+COMPUTED_HEADERS = {"x-cursor-checksum", "x-cursor-signature", "x-request-id", "x-goog-trace-id"}
 # Headers that are standard and handled by the adapter code, so we tell the user
 # not to template them.
-HANDLED_HEADERS = {"authorization", "content-type", "accept", "user-agent",
-                   "accept-encoding", "host", "connection"}
+HANDLED_HEADERS = {
+    "authorization",
+    "content-type",
+    "accept",
+    "user-agent",
+    "accept-encoding",
+    "host",
+    "connection",
+}
 
 
 def _mask(value: str) -> str:
@@ -100,8 +111,11 @@ def _match_host(host: str, app: str, extra_hosts: list[str]) -> bool:
     if extra_hosts and any(host == h or host.endswith("." + h) for h in extra_hosts):
         return True
     if app == "all":
-        return any(host == h or host.endswith("." + h)
-                   for prof in APP_PROFILES.values() for h in prof["hosts"])
+        return any(
+            host == h or host.endswith("." + h)
+            for prof in APP_PROFILES.values()
+            for h in prof["hosts"]
+        )
     prof = APP_PROFILES.get(app)
     if not prof:
         return False
@@ -110,8 +124,11 @@ def _match_host(host: str, app: str, extra_hosts: list[str]) -> bool:
 
 def _is_grpc(ct: str) -> bool:
     ct = (ct or "").lower()
-    return ("connect+proto" in ct) or ("application/grpc" in ct) or ("proto" in ct
-                                        and "json" not in ct)
+    return (
+        ("connect+proto" in ct)
+        or ("application/grpc" in ct)
+        or ("proto" in ct and "json" not in ct)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +152,7 @@ def analyze_flows(flows: list[dict], app: str = "all") -> dict:
         key = (method, host, path, req_ct)
         if key not in seen_ep:
             seen_ep.add(key)
-            endpoints.append({"method": method, "host": host, "path": path,
-                              "content_type": req_ct})
+            endpoints.append({"method": method, "host": host, "path": path, "content_type": req_ct})
         for name, val in (f.get("request_headers") or {}).items():
             lname = name.lower()
             if lname in MASK_VALUE:
@@ -146,9 +162,9 @@ def analyze_flows(flows: list[dict], app: str = "all") -> dict:
         if _is_grpc(req_ct):
             grpc = True
         if len(sample_req_bodies) < 3 and f.get("request_body_repr"):
-            sample_req_bodies.append({
-                "host": host, "path": path, "content_type": req_ct,
-                "body": f["request_body_repr"]})
+            sample_req_bodies.append(
+                {"host": host, "path": path, "content_type": req_ct, "body": f["request_body_repr"]}
+            )
 
     # sort endpoints by host then path
     endpoints.sort(key=lambda e: (e["host"], e["method"], e["path"]))
@@ -179,7 +195,8 @@ def _suggest_header_templates(analysis: dict) -> tuple[str, str]:
             notes.append(
                 f"- `{name}` is COMPUTED per request (do not hardcode). Capture "
                 f"several values and reproduce the derivation; for Cursor see "
-                f"burpheart/cursor-tap, then set `cursor.checksum` (or a template).")
+                f"burpheart/cursor-tap, then set `cursor.checksum` (or a template)."
+            )
             continue
         if lname in MASK_VALUE:
             continue
@@ -188,10 +205,14 @@ def _suggest_header_templates(analysis: dict) -> tuple[str, str]:
         # static-ish header -> suggest a literal template
         lines.append(f'  - {{ name: "{name}", value: "{sample}" }}')
     if handled:
-        notes.insert(0, "Authorization / Content-Type are handled by the adapter "
-                       "code (auth.type=bearer / dialect). Do NOT template them.")
-    yaml = "header_templates:\n" + ("\n".join(lines) if lines else
-                                    "  # (no extra non-standard headers captured yet)")
+        notes.insert(
+            0,
+            "Authorization / Content-Type are handled by the adapter "
+            "code (auth.type=bearer / dialect). Do NOT template them.",
+        )
+    yaml = "header_templates:\n" + (
+        "\n".join(lines) if lines else "  # (no extra non-standard headers captured yet)"
+    )
     return yaml, "\n".join(notes)
 
 
@@ -217,7 +238,7 @@ Minimal `{proto_file}` skeleton to start from:
 
 ```protobuf
 syntax = "proto3";
-package {app.replace('-', '_')};
+package {app.replace("-", "_")};
 
 // VERIFY every field name against `protoc --decode_raw` output.
 service ChatService {{
@@ -294,15 +315,15 @@ def _checklist(analysis: dict) -> str:
             "`POST /v1/chat/completions`.",
         ]
     else:
-        items = ["Run with a specific --app (cursor|antigravity|workbuddy) for "
-                 "a tailored checklist."]
+        items = [
+            "Run with a specific --app (cursor|antigravity|workbuddy) for a tailored checklist."
+        ]
     return "\n".join(f"{i}. {t}" for i, t in enumerate(items, 1))
 
 
 def build_report_md(analysis: dict) -> str:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     app = analysis["app"]
-    prof = APP_PROFILES.get(app, {})
     hdr_yaml, hdr_notes = _suggest_header_templates(analysis)
     sections = [
         f"# aigw protocol-discovery report — `{app}`",
@@ -311,11 +332,14 @@ def build_report_md(analysis: dict) -> str:
         "\n## 1. Endpoints observed",
     ]
     if analysis["endpoints"]:
-        rows = ["| method | host | path | content-type |",
-                "|--------|------|------|--------------|"]
+        rows = [
+            "| method | host | path | content-type |",
+            "|--------|------|------|--------------|",
+        ]
         for e in analysis["endpoints"]:
-            rows.append(f"| {e['method']} | {e['host']} | {e['path']} | "
-                        f"{e['content_type'] or '-'} |")
+            rows.append(
+                f"| {e['method']} | {e['host']} | {e['path']} | {e['content_type'] or '-'} |"
+            )
         sections.append("\n" + "\n".join(rows))
     else:
         sections.append("\n_(no flows captured for this app yet)_")
@@ -334,7 +358,8 @@ def build_report_md(analysis: dict) -> str:
             "\nThis app's chat is JSON (not protobuf). Open the captured "
             "`request_body_repr` in captures/<host>/*.json and map the fields "
             "into the adapter (Antigravity: cloudcode envelope; Workbuddy: "
-            "dialect + header_templates).")
+            "dialect + header_templates)."
+        )
 
     sections.append("\n## 4. Next manual steps (checklist)")
     sections.append("\n" + _checklist(analysis))
@@ -372,7 +397,8 @@ def _flow_from_mitm(flow) -> dict:
         "response_content_type": res_ct,
         "response_headers": dict(flow.response.headers) if flow.response else {},
         "response_body_repr": _body_repr(flow.response.raw_content or b"", res_ct)
-        if flow.response else None,
+        if flow.response
+        else None,
     }
 
 
@@ -385,8 +411,10 @@ def _body_repr(raw: bytes, ctype: str) -> dict:
         except Exception:
             return {"text": raw[:2000].decode("utf-8", "replace")}
     # binary protobuf / connect / grpc -> keep bytes for offline decode
-    return {"binary_b64": base64.b64encode(raw).decode(),
-            "hint": "decode with: protoc --decode_raw < file  (Connect/gRPC framing)"}
+    return {
+        "binary_b64": base64.b64encode(raw).decode(),
+        "hint": "decode with: protoc --decode_raw < file  (Connect/gRPC framing)",
+    }
 
 
 def write_report(out_dir: str | Path, app: str, flows: list[dict]) -> Path:
@@ -399,7 +427,8 @@ def write_report(out_dir: str | Path, app: str, flows: list[dict]) -> Path:
     report_path.write_text(rep, encoding="utf-8")
     # also drop a machine-readable summary
     (out_dir / "analysis.json").write_text(
-        json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
+        json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return report_path
 
 
@@ -438,22 +467,22 @@ try:
             d.mkdir(parents=True, exist_ok=True)
             ts = int(rec["ts"] * 1000)
             (d / f"{ts}_{flow.request.method}.json").write_text(
-                json.dumps(rec, indent=2, ensure_ascii=False), encoding="utf-8")
+                json.dumps(rec, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
             for side in ("request", "response"):
                 body = rec.get(f"{side}_body_repr") or {}
                 if isinstance(body, dict) and "binary_b64" in body:
                     raw = base64.b64decode(body["binary_b64"])
                     (d / f"{ts}_{flow.request.method}_{side}.binpb").write_bytes(raw)
-            print(f"{self._label} captured {flow.request.method} "
-                  f"{flow.request.pretty_url}")
+            print(f"{self._label} captured {flow.request.method} {flow.request.pretty_url}")
 
         def done(self):
             if not self.flows:
-                print(f"{self._label} no matching flows captured; "
-                      f"nothing to report.")
+                print(f"{self._label} no matching flows captured; nothing to report.")
                 return
-            p = write_report(Path(self.out) / (self.app if self.app != "all"
-                                               else "_all"), self.app, self.flows)
+            p = write_report(
+                Path(self.out) / (self.app if self.app != "all" else "_all"), self.app, self.flows
+            )
             print(f"{self._label} wrote report -> {p}")
             print(f"{self._label} open it and follow section 4 (checklist).")
 
@@ -468,10 +497,11 @@ except ImportError:  # mitmproxy not installed (e.g. our test venv) -> no addon
 # ---------------------------------------------------------------------------
 def _cli_report(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
-        description="Re-generate aigw discovery report from captured files "
-                    "(no mitmproxy needed).")
-    ap.add_argument("--report", required=True,
-                    help="captures directory containing *.json flow files")
+        description="Re-generate aigw discovery report from captured files (no mitmproxy needed)."
+    )
+    ap.add_argument(
+        "--report", required=True, help="captures directory containing *.json flow files"
+    )
     ap.add_argument("--app", choices=list(APP_PROFILES) + ["all"], default="all")
     args = ap.parse_args(argv)
     flows = load_captured_jsons(args.report)
@@ -485,4 +515,5 @@ def _cli_report(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     import sys
+
     raise SystemExit(_cli_report(sys.argv[1:]))

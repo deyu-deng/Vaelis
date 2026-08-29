@@ -1554,6 +1554,53 @@ export const zh: Translations = {
     failedRename: '重命名配置档案失败'
   },
 
+  agenda: {
+    close: '关闭日程',
+    title: '日程',
+    loading: '正在加载日程…',
+    loadFailed: '日程加载失败',
+    count: count => `${count} 条日程`,
+    pendingCount: count => `${count} 条待你确认`,
+    today: '今天',
+    tomorrow: '明天',
+    emptyTitle: '暂无日程',
+    emptyDesc: '从消息里识别到的日程会出现在这里，你也可以自己添加。',
+    newEvent: '新建日程',
+    edit: '编辑日程',
+    editTitle: '编辑日程',
+    createTitle: '新建日程',
+    titleField: '标题',
+    titlePlaceholder: '这是什么安排？',
+    titleTimeRequired: '标题和开始时间不能为空。',
+    startLabel: '开始',
+    kindLabel: '类型',
+    sourceLabel: '来源',
+    changeLabel: '待确认的改动',
+    evidenceLabel: '证据',
+    confirm: '确认',
+    dismiss: '忽略',
+    confirmed: '已确认',
+    dismissed: '已忽略该改动',
+    deleted: '已删除',
+    actionFailed: '日程操作失败',
+    statuses: {
+      pending: '待确认',
+      confirmed: '已确认',
+      cancelled: '已取消'
+    },
+    kinds: {
+      meeting: '会议',
+      ddl: '截止',
+      class: '课程',
+      task: '事项'
+    },
+    sources: {
+      wechat: '微信',
+      dingtalk: '钉钉',
+      manual: '手动添加',
+      timetable: '课表'
+    }
+  },
   cron: {
     close: '关闭定时任务',
     title: '定时任务',
@@ -2264,6 +2311,9 @@ export const zh: Translations = {
       running: count => `${count} 个运行中`,
       cron: '排程',
       openCron: '打开排程任务',
+      agenda: '日程',
+      openAgenda: '打开日程',
+      agendaPending: count => `${count} 条待确认`,
       starmap: '记忆图谱',
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',

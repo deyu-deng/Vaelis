@@ -1,0 +1,81 @@
+<h2>AI Native 生活系统 — 顶层架构</h2>
+<p class="subtitle">德彧，这是你梦想的类贾维斯系统总览。先看看整体布局，你觉得哪个方向先深入？</p>
+
+<div class="mockup" style="margin-bottom:24px;">
+  <div class="mockup-header">System Architecture Overview</div>
+  <div class="mockup-body" style="padding:16px;font-size:13px;line-height:1.6;">
+    
+    <div style="display:flex;gap:12px;margin-bottom:12px;">
+      <div style="flex:1;background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;">
+        <span class="label">Layer 1</span>
+        <h4 style="margin:4px 0;color:#38bdf8;">📡 Input Gateway</h4>
+        <p style="color:#94a3b8;margin:0;font-size:12px;">手机远程 / 语音 / 桌面端 / 定时任务</p>
+      </div>
+      <div style="flex:1;background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;">
+        <span class="label">Layer 2</span>
+        <h4 style="margin:4px 0;color:#a78bfa;">🧠 Brain Core</h4>
+        <p style="color:#94a3b8;margin:0;font-size:12px;">Vaelis Agent · 规划/调度/记忆</p>
+      </div>
+      <div style="flex:1;background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;">
+        <span class="label">Layer 3</span>
+        <h4 style="margin:4px 0;color:#34d399;">🛠 Capability Pool</h4>
+        <p style="color:#94a3b8;margin:0;font-size:12px;">GUI操控 · 文件 · 浏览器 · API · 代码</p>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-bottom:12px;">
+      <div style="flex:1;background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;">
+        <span class="label">Layer 4</span>
+        <h4 style="margin:4px 0;color:#fbbf24;">📊 Monitor & Preview</h4>
+        <p style="color:#94a3b8;margin:0;font-size:12px;">实时预览面板 · 进度跟踪 · 人工审核节点</p>
+      </div>
+      <div style="flex:1;background:#1e293b;border-radius:8px;padding:12px;border:1px solid #334155;">
+        <span class="label">Layer 5</span>
+        <h4 style="margin:4px 0;color:#f87171;">🎯 Output Domain</h4>
+        <p style="color:#94a3b8;margin:0;font-size:12px;">建模 / 代码 / 绘画 / 文档 / 浏览器 / 赚钱</p>
+      </div>
+    </div>
+
+    <div style="background:#0f172a;border-radius:8px;padding:12px;border:1px dashed #475569;">
+      <span class="label">Infrastructure</span>
+      <div style="display:flex;gap:16px;margin-top:6px;">
+        <span style="color:#94a3b8;font-size:12px;">🖥 Pico 2 W HID (键鼠模拟)</span>
+        <span style="color:#94a3b8;font-size:12px;">🔄 API Quota 聚合</span>
+        <span style="color:#94a3b8;font-size:12px;">⏰ 24/7 常驻运行</span>
+        <span style="color:#94a3b8;font-size:12px;">💾 本地优先存储</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="gateway" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>先深入 Input Gateway</h3>
+      <p>手机端怎么远程控制？语音入口怎么设计？定时任务触发器怎么建？</p>
+    </div>
+  </div>
+  <div class="option" data-choice="brain" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>先深入 Brain Core</h3>
+      <p>Vaelis 的 Agent 架构、规划引擎、记忆系统、任务调度怎么设计？</p>
+    </div>
+  </div>
+  <div class="option" data-choice="capability" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>先深入 Capability Pool</h3>
+      <p>GUI 操控能力矩阵、文件系统 Skill、浏览器自动化、代码执行沙箱</p>
+    </div>
+  </div>
+  <div class="option" data-choice="monitor" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>先深入 Monitor & Preview</h3>
+      <p>实时预览面板长什么样？人工审核节点怎么卡？进度可视化怎么做？</p>
+    </div>
+  </div>
+</div>

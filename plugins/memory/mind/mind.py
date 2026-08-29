@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 # MIND_ROOT). These are the zones Mind's verifier does NOT block. Do not add
 # Vault/projects/<new> or Loom/skills/<new> here — those require editing Mind's
 # own AGENTS.md declarations, which this plugin must never do automatically.
-DEFAULT_MIND_ROOT = "/Users/ciel/Mind"
 SAFE_PREFIXES = (
     "Vault/projects/vaelis",       # Vaelis-specific knowledge (already exists)
     "Vault/meta",
@@ -61,14 +60,19 @@ SAFE_PREFIXES = (
 
 
 def _resolve_root() -> Path:
-    """Resolve the Mind root from env (override) or platform default."""
-    raw = os.environ.get("MIND_ROOT")
-    if raw:
-        return Path(raw)
-    # Platform default. Windows: D:\Mind. Extend via config.yaml if needed.
-    if os.name == "nt":
-        return Path("D:/Mind")
-    return Path(DEFAULT_MIND_ROOT)
+    """Resolve the Mind root.
+
+    Delegates to :mod:`vaelis.mind.paths` so there is one resolver and no
+    hardcoded drive letters (the North Star contract requires ``MIND_ROOT``).
+    Returns a non-existent placeholder when nothing is configured, so callers
+    can keep using ``.is_dir()`` as the availability check.
+    """
+    from vaelis.mind.paths import resolve_root as _shared_resolve
+
+    root = _shared_resolve()
+    if root is not None:
+        return root
+    return Path(os.environ.get("MIND_ROOT") or "mind-root-not-configured")
 
 
 def _is_safe(target: Path, root: Path) -> bool:

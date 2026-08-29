@@ -222,6 +222,10 @@ declare global {
           token?: string
           baseUrl?: string
           models?: string[]
+          /** Machine-readable failure code, e.g. 'AGY_NOT_FOUND'. */
+          code?: string
+          /** One-line install command shown to the user when the CLI is missing. */
+          installHint?: string
           error?: string
         }>
       }

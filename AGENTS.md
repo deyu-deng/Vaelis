@@ -1354,3 +1354,21 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## Documentation Discipline
+
+Docs live in `docs/` under a Diátaxis layout (`adr/`, `specs/`, `runbooks/`,
+`reference/`, `audit/`, `templates/`); historical/outdated material goes to
+`Docs/archive/`. Three rules keep the tree from rotting again:
+
+1. **New docs must use a template.** Any new document starts from
+   `docs/templates/`; do not invent ad-hoc formats or drop files at random
+   locations.
+2. **Outdated docs must be absorbed, then deleted or archived.** Before
+   removing an outdated doc, fold any still-useful content (checklists,
+   glossaries, requirements) into the active doc set; then delete or archive
+   the original. Never leave stale copies lying around "just in case".
+3. **No accumulation without cleanup.** Every new doc is a debt: prefer
+   updating an existing doc over creating a new one, and when you create one,
+   delete or archive something it supersedes. If you cannot justify the new
+   file, don't create it.

@@ -263,6 +263,18 @@ from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
 
 app.include_router(_memory_oauth_router)
 
+# Agenda (AI-secretary milestone M1) owns its own package; this file only
+# mounts it. The desktop board must not depend on an opt-in plugin being
+# enabled, so it rides the core /api surface (docs/adr/0008-*.md).
+from vaelis.agenda.router import router as _agenda_router  # noqa: E402
+
+app.include_router(_agenda_router, prefix="/api/agenda", tags=["agenda"])
+
+# chatlog pushes new WeChat messages here; the collector owns all the logic.
+from vaelis.collectors.chatlog.webhook import router as _chatlog_router  # noqa: E402
+
+app.include_router(_chatlog_router, prefix="/api/chatlog", tags=["chatlog"])
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via

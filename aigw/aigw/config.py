@@ -1,4 +1,5 @@
 """Config loader: YAML + env expansion."""
+
 from __future__ import annotations
 
 import os
@@ -8,6 +9,10 @@ from pathlib import Path
 import yaml
 
 _ENV = re.compile(r"\$\{([A-Z0-9_]+)(?::-([^}]*))?\}")
+
+# Package root: aigw/aigw/config.py -> parents[1] is the project root (aigw/).
+_PKG_ROOT = Path(__file__).resolve().parents[1]
+_SAFE_PROFILE = _PKG_ROOT / "profiles" / "safe.yaml"
 
 
 def _expand(obj):
@@ -20,8 +25,30 @@ def _expand(obj):
     return obj
 
 
+def resolve_config_path(path: str | None = None) -> Path:
+    """Resolve which config file to load.
+
+    Order:
+      1. Explicit path / ``AIGW_CONFIG``
+      2. ``./config.yaml`` (cwd)
+      3. ``profiles/safe.yaml`` next to the package (ToS-safe default)
+    """
+    if path or os.environ.get("AIGW_CONFIG"):
+        return Path(path or os.environ["AIGW_CONFIG"])
+    cwd_cfg = Path("config.yaml")
+    if cwd_cfg.exists():
+        return cwd_cfg
+    if _SAFE_PROFILE.exists():
+        return _SAFE_PROFILE
+    return cwd_cfg
+
+
 def load(path: str | None = None) -> dict:
-    p = Path(path or os.environ.get("AIGW_CONFIG", "config.yaml"))
+    p = resolve_config_path(path)
     if not p.exists():
-        raise FileNotFoundError(f"config not found: {p}")
-    return _expand(yaml.safe_load(p.read_text()))
+        raise FileNotFoundError(
+            f"config not found: {p}\n"
+            f"  hint: copy config.example.yaml -> config.yaml, or run:\n"
+            f"        aigw start --config profiles/safe.yaml"
+        )
+    return _expand(yaml.safe_load(p.read_text(encoding="utf-8")))

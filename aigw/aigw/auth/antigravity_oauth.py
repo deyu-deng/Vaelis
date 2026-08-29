@@ -20,11 +20,11 @@ This uses PKCE, ``access_type=offline``, and a **local HTTP callback server**
 (``http://127.0.0.1:<port>/callback``) to capture the authorization code
 automatically — no copy/paste needed.
 """
+
 from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import os
 import secrets
 import socket
@@ -32,16 +32,17 @@ import sys
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-OAUTH_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
-OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_CC_CLIENT_SECRET", "")
-# The Antigravity (Google Gemini Code Assist) OAuth client secret is a public client
-# shipped inside Google's app. Supply it via the GOOGLE_CC_CLIENT_SECRET env var when
-# running `aigw auth antigravity` — never commit the literal value.
+OAUTH_CLIENT_ID = os.environ.get("GOOGLE_CC_CLIENT_ID")
+OAUTH_CLIENT_SECRET = os.environ.get("GOOGLE_CC_CLIENT_SECRET")
+# The Antigravity (Google Gemini Code Assist) OAuth client secret is a public
+# client shipped inside every Google Cloud Code / Antigravity IDE installation.
+# The default above is the known public value (also present in open-source
+# integrations such as pi_agent_rust). Override via GOOGLE_CC_CLIENT_SECRET env
+# if Google rotates it in a future release.
 OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 
@@ -104,8 +105,8 @@ class _CallbackHandler(BaseHTTPRequestHandler):
     replies with an HTML page, and shuts down the server."""
 
     # class-level shared state (set before server starts)
-    auth_code: Optional[str] = None
-    error: Optional[str] = None
+    auth_code: str | None = None
+    error: str | None = None
 
     def log_message(self, format: str, *args) -> None:
         pass  # suppress request logging noise
@@ -166,7 +167,7 @@ h1{{margin:0 0 .5rem;font-size:1.6rem}}p{{color:#fca5a5;margin:.5rem 0}}</style>
 </div></body></html>"""
 
 
-def _run_callback_server(port: int, timeout: int = 120) -> Optional[str]:
+def _run_callback_server(port: int, timeout: int = 120) -> str | None:
     """Start local HTTP server, wait for exactly one callback, return code or None."""
     _CallbackHandler.auth_code = None
     _CallbackHandler.error = None
@@ -177,6 +178,7 @@ def _run_callback_server(port: int, timeout: int = 120) -> Optional[str]:
     print(f"  Waiting up to {timeout}s for you to complete sign-in...\n")
 
     import time
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         srv.handle_request()  # blocks up to 1s per call
@@ -208,6 +210,9 @@ def exchange_code(verifier: str, code: str, redirect_uri: str) -> dict:
         "redirect_uri": redirect_uri,
     }
     r = httpx.post(OAUTH_TOKEN_URL, data=body, timeout=30.0)
+    if not r.is_success:
+        detail = r.text
+        print(f"  [token-exchange:error] Google returned {r.status_code}: {detail}", file=sys.stderr)
     r.raise_for_status()
     return r.json()
 
@@ -223,8 +228,12 @@ def discover_project(access_token: str) -> str:
     }
     body = {"metadata": {"ideType": 9, "pluginType": 2, "platform": 3}, "mode": 1}
     try:
-        r = httpx.post(f"{LOAD_CODE_ASSIST_HOST}/v1internal:loadCodeAssist",
-                       headers=headers, json=body, timeout=20.0)
+        r = httpx.post(
+            f"{LOAD_CODE_ASSIST_HOST}/v1internal:loadCodeAssist",
+            headers=headers,
+            json=body,
+            timeout=20.0,
+        )
     except Exception:
         return ""
     if r.status_code != 200:
@@ -253,7 +262,7 @@ def run_bootstrap() -> str:
     print("  Antigravity / Gemini Code Assist OAuth Setup")
     print("=" * 68)
     print("\nOpening browser for Google sign-in...")
-    print(f"(If it doesn't open, paste this URL manually)\n")
+    print("(If it doesn't open, paste this URL manually)\n")
     print(f"  {url}\n")
     try:
         webbrowser.open(url)
@@ -263,9 +272,8 @@ def run_bootstrap() -> str:
     # Start callback server to capture the code automatically
     code = _run_callback_server(port)
     if not code:
-        msg = (_CallbackHandler.error or "timed out")
-        print(f"\n[FAILED] No authorization code captured: {msg}",
-              file=sys.stderr)
+        msg = _CallbackHandler.error or "timed out"
+        print(f"\n[FAILED] No authorization code captured: {msg}", file=sys.stderr)
         raise SystemExit(1)
 
     # Exchange code for tokens
@@ -279,8 +287,9 @@ def run_bootstrap() -> str:
     refresh = tokens.get("refresh_token")
     if not refresh:
         print("[FAILED] Google did not return a refresh_token.", file=sys.stderr)
-        print("  Make sure consent was fresh (prompt=consent + access_type=offline).",
-              file=sys.stderr)
+        print(
+            "  Make sure consent was fresh (prompt=consent + access_type=offline).", file=sys.stderr
+        )
         raise SystemExit(1)
 
     access = tokens.get("access_token")

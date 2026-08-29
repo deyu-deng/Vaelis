@@ -1,8 +1,17 @@
-"""Workbuddy provider adapter (generic, config-driven).
+"""Workbuddy provider adapter (generic, config-driven API passthrough).
 
-Workbuddy's internal API is not publicly documented. Rather than hardcode guesses,
-this adapter is a configurable passthrough: you capture the real endpoint + auth with
-tools/mitm_discover.py, drop the details into config.yaml, and pick a `dialect`:
+LEGACY / NON-COMPLIANT ROUTE. Workbuddy's internal API is not publicly
+documented. Rather than hardcode guesses, this adapter is a configurable
+passthrough: you capture the real endpoint + auth with tools/mitm_discover.py,
+drop the details into config.yaml, and pick a `dialect`:
+
+Prefer the compliant routes instead:
+  - workbuddy_cli  -> spawn a Workbuddy CLI subprocess (no token scraping)
+  - workbuddy_gui  -> Windows UI Automation of the desktop app
+  - workbuddy      -> hybrid: prefer CLI, fall back to GUI (WorkbuddyHybridProvider)
+
+This `workbuddy_api` adapter stays available for builds that DO expose a clean
+HTTP API you can legitimately call with your own key.
 
   dialect: "openai"     -> upstream already speaks /v1/chat/completions (passthrough)
   dialect: "anthropic"  -> upstream speaks /v1/messages (we translate both ways)
@@ -31,14 +40,15 @@ Example config:
     accounts:
       - { id: wb-1, token: ${WB_TOKEN} }
 """
+
 from __future__ import annotations
 
 import json
 import time
 import uuid
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
-from .base import Provider, Account, Credential, UpstreamError
+from .base import Account, Capabilities, Credential, Provider, UpstreamError
 
 
 def _flatten_oai(parts) -> str:
@@ -51,8 +61,17 @@ def _flatten_oai(parts) -> str:
     return "".join(out)
 
 
-class WorkbuddyProvider(Provider):
-    name = "workbuddy"
+class WorkbuddyApiProvider(Provider):
+    name = "workbuddy_api"
+    # Own-key HTTP passthrough: tools only if upstream dialect supports them.
+    default_capabilities = Capabilities(
+        stream=True,
+        tools=True,
+        vision=False,
+        embeddings=False,
+        sessionful=False,
+        compliance="research",
+    )
 
     def __init__(self, config, http):
         super().__init__(config, http)
@@ -66,12 +85,16 @@ class WorkbuddyProvider(Provider):
     async def discover_accounts(self) -> list[Account]:
         accs = []
         for i, a in enumerate(self.config.get("accounts", [])):
-            accs.append(Account(
-                id=a.get("id", f"workbuddy-{i}"), provider=self.name,
-                label=a.get("label", ""),
-                cred=Credential(access_token=a.get("token", ""),
-                                refresh_token=a.get("refresh_token", "")),
-            ))
+            accs.append(
+                Account(
+                    id=a.get("id", f"workbuddy-{i}"),
+                    provider=self.name,
+                    label=a.get("label", ""),
+                    cred=Credential(
+                        access_token=a.get("token", ""), refresh_token=a.get("refresh_token", "")
+                    ),
+                )
+            )
         self.accounts = accs
         return accs
 
@@ -130,8 +153,11 @@ class WorkbuddyProvider(Provider):
     async def chat(self, acc: Account, oai_req: dict) -> dict:
         if self.dialect == "openai":
             req = dict(oai_req, model=self._map_model(oai_req["model"]))
-            r = await self.http.post(self.base_url + self._render_path(oai_req),
-                                     headers=self._render_headers(acc, oai_req), json=req)
+            r = await self.http.post(
+                self.base_url + self._render_path(oai_req),
+                headers=self._render_headers(acc, oai_req),
+                json=req,
+            )
             err = self._classify_http(r.status_code)
             if err:
                 raise err
@@ -146,9 +172,12 @@ class WorkbuddyProvider(Provider):
     async def chat_stream(self, acc: Account, oai_req: dict) -> AsyncIterator[dict]:
         if self.dialect == "openai":
             req = dict(oai_req, model=self._map_model(oai_req["model"]), stream=True)
-            async with self.http.stream("POST", self.base_url + self._render_path(oai_req),
-                                        headers=self._render_headers(acc, oai_req),
-                                        json=req) as r:
+            async with self.http.stream(
+                "POST",
+                self.base_url + self._render_path(oai_req),
+                headers=self._render_headers(acc, oai_req),
+                json=req,
+            ) as r:
                 err = self._classify_http(r.status_code)
                 if err:
                     raise err
@@ -194,21 +223,33 @@ class WorkbuddyProvider(Provider):
         return body
 
     def _from_anthropic(self, obj: dict, model: str) -> dict:
-        text = "".join(c.get("text", "") for c in obj.get("content", [])
-                       if isinstance(c, dict) and c.get("type") == "text")
+        text = "".join(
+            c.get("text", "")
+            for c in obj.get("content", [])
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
         return {
             "id": obj.get("id", f"chatcmpl-{uuid.uuid4().hex[:24]}"),
             "object": "chat.completion",
-            "created": int(time.time()), "model": model,
-            "choices": [{"index": 0, "finish_reason": obj.get("stop_reason", "stop"),
-                         "message": {"role": "assistant", "content": text}}],
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": obj.get("stop_reason", "stop"),
+                    "message": {"role": "assistant", "content": text},
+                }
+            ],
             "usage": obj.get("usage", {}),
         }
 
     async def _anthropic_chat(self, acc: Account, oai_req: dict) -> dict:
         body = self._to_anthropic(oai_req)
-        r = await self.http.post(self.base_url + self._render_path(oai_req),
-                                 headers=self._render_headers(acc, oai_req), json=body)
+        r = await self.http.post(
+            self.base_url + self._render_path(oai_req),
+            headers=self._render_headers(acc, oai_req),
+            json=body,
+        )
         err = self._classify_http(r.status_code)
         if err:
             raise err
@@ -218,12 +259,15 @@ class WorkbuddyProvider(Provider):
     async def _anthropic_stream(self, acc: Account, oai_req: dict) -> AsyncIterator[dict]:
         body = self._to_anthropic(dict(oai_req, stream=True))
         cid = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-        async with self.http.stream("POST", self.base_url + self._render_path(oai_req),
-                                    headers=self._render_headers(acc, oai_req), json=body) as r:
+        async with self.http.stream(
+            "POST",
+            self.base_url + self._render_path(oai_req),
+            headers=self._render_headers(acc, oai_req),
+            json=body,
+        ) as r:
             err = self._classify_http(r.status_code)
             if err:
                 raise err
-            buf = ""
             async for line in r.aiter_lines():
                 line = line.strip()
                 if not line.startswith("data:"):
@@ -235,8 +279,10 @@ class WorkbuddyProvider(Provider):
                     obj = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") == "content_block_delta" and \
-                   obj.get("delta", {}).get("type") == "text_delta":
+                if (
+                    obj.get("type") == "content_block_delta"
+                    and obj.get("delta", {}).get("type") == "text_delta"
+                ):
                     yield _chunk(cid, oai_req["model"], obj["delta"]["text"])
                 elif obj.get("type") == "message_stop":
                     yield _chunk(cid, oai_req["model"], None, finish="stop")
@@ -246,7 +292,9 @@ class WorkbuddyProvider(Provider):
 def _chunk(cid: str, model: str, text, finish=None) -> dict:
     delta = {} if text is None else {"content": text}
     return {
-        "id": cid, "object": "chat.completion.chunk",
-        "created": int(time.time()), "model": model,
+        "id": cid,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }

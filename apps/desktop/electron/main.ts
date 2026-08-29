@@ -7636,7 +7636,20 @@ ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 // process here; the renderer drives Start/Stop/Status and points the local
 // endpoint at it. Fully separate from the core hermes_cli backend so a failure
 // here never breaks the app's normal boot path.
-let aigwChild: any = null
+// Per-app aigw gateway children, keyed by appId (e.g. 'antigravity', 'workbuddy').
+// Each desktop-quota app runs its own aigw process on a dedicated port so the
+// OAuth-based Antigravity route and the token-less Workbuddy route stay isolated
+// and can be connected/disconnected independently.
+const aigwChildren = new Map<string, any>()
+function getAigwChild(appId: string): any {
+  return aigwChildren.get(appId) ?? null
+}
+function setAigwChild(appId: string, child: any): void {
+  aigwChildren.set(appId, child)
+}
+function clearAigwChild(appId: string): void {
+  aigwChildren.delete(appId)
+}
 
 const logAigw = (s: string) => {
   try {
@@ -7648,26 +7661,128 @@ const logAigw = (s: string) => {
   }
 }
 
+// True if `dir` looks like a usable aigw checkout: it exists and contains the
+// desktop config we ship. We check for the config (not just the folder) so a
+// stale empty directory doesn't shadow a real one.
+function isAigwDir(dir: string): boolean {
+  try {
+    return fs.existsSync(path.join(dir, 'config.antigravity-desktop.yaml')) ||
+           fs.existsSync(path.join(dir, 'aigw', '__init__.py'))
+  } catch {
+    return false
+  }
+}
+
 function resolveAigwDir(): string {
+  // 1) Explicit override (for packaged builds or non-standard layouts).
   if (process.env.VAELIS_AIGW_DIR) {
     return process.env.VAELIS_AIGW_DIR
   }
-  // Dev layout: apps/desktop -> apps -> repo root -> aigw
-  return path.resolve(app.getAppPath(), '..', '..', 'aigw')
+
+  // 2) Dev layout: apps/desktop -> apps -> repo root -> aigw
+  const devPath = path.resolve(app.getAppPath(), '..', '..', 'aigw')
+  if (isAigwDir(devPath)) {
+    return devPath
+  }
+
+  // 3) Walk up from the app path looking for a repo-root `aigw/` sibling. This
+  //    handles running win-unpacked from inside the source tree (release/
+  //    win-unpacked/resources/app.asar -> ... -> repo root -> aigw), where the
+  //    repo's aigw carries a working .venv while the bootstrap clone may not.
+  let cursor = app.getAppPath()
+  for (let i = 0; i < 8; i++) {
+    const parent = path.dirname(cursor)
+    if (parent === cursor) break
+    const candidate = path.join(parent, 'aigw')
+    if (isAigwDir(candidate)) {
+      return candidate
+    }
+    cursor = parent
+  }
+
+  // 4) Bootstrap-installed backend clone (HERMES_HOME/hermes-agent/aigw).
+  //    After first-launch bootstrap the full Vaelis repo (including aigw/) is
+  //    cloned into HERMES_HOME, so a packaged desktop can find it there.
+  const hermesHome = process.env.HERMES_HOME
+  if (hermesHome) {
+    const bootstrapPath = path.join(hermesHome, 'hermes-agent', 'aigw')
+    if (isAigwDir(bootstrapPath)) {
+      return bootstrapPath
+    }
+  }
+
+  // 5) Fall back to the dev layout even if it doesn't exist — the caller
+  //    will surface a clear "config not found" error.
+  return devPath
 }
 
 function resolveAigwPython(aigwDir: string): string {
-  const venvPy = path.join(aigwDir, '.venv', 'bin', 'python')
+  // Prefer the aigw-local venv. Layout differs by OS:
+  //   POSIX:   .venv/bin/python
+  //   Windows: .venv/Scripts/python.exe
+  const venvCandidates = IS_WINDOWS
+    ? [
+        path.join(aigwDir, '.venv', 'Scripts', 'python.exe'),
+        path.join(aigwDir, '.venv', 'Scripts', 'python'),
+      ]
+    : [
+        path.join(aigwDir, '.venv', 'bin', 'python'),
+        path.join(aigwDir, '.venv', 'bin', 'python3'),
+      ]
 
-  if (fs.existsSync(venvPy)) {
-    return venvPy
+  for (const candidate of venvCandidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  // Fall back to the bootstrap backend's venv (HERMES_HOME/hermes-agent/venv),
+  // which has the full Python environment installed by first-launch bootstrap.
+  // aigw must be importable there (installed or on PYTHONPATH) — the caller
+  // sets cwd to aigwDir so `python -m aigw` resolves the local package.
+  const hermesHome = process.env.HERMES_HOME
+  if (hermesHome) {
+    const hermesVenv = IS_WINDOWS
+      ? [
+          path.join(hermesHome, 'hermes-agent', 'venv', 'Scripts', 'python.exe'),
+          path.join(hermesHome, 'hermes-agent', 'venv', 'Scripts', 'python'),
+        ]
+      : [
+          path.join(hermesHome, 'hermes-agent', 'venv', 'bin', 'python'),
+          path.join(hermesHome, 'hermes-agent', 'venv', 'bin', 'python3'),
+        ]
+    for (const candidate of hermesVenv) {
+      if (fs.existsSync(candidate)) {
+        return candidate
+      }
+    }
   }
 
   return findSystemPython()
 }
 
-function resolveAigwConfig(aigwDir: string): string {
-  return path.join(aigwDir, 'config.yaml')
+function resolveAigwConfig(aigwDir: string, appId?: string): string {
+  // When an explicit appId is given and its dedicated desktop config exists,
+  // prefer it so the Desktop Quotas connect flow and the auto-start resume
+  // path use the same per-app gateway config.
+  if (appId) {
+    const appCfg = path.join(aigwDir, `config.${appId}-desktop.yaml`)
+    if (fs.existsSync(appCfg)) {
+      return appCfg
+    }
+  }
+  // Otherwise prefer an explicit local config.yaml; fall back to the
+  // ToS-safe profile (mock + CLI only) so first-run onboarding does not
+  // enable reverse / token-scrape providers by default.
+  const preferred = path.join(aigwDir, 'config.yaml')
+  if (fs.existsSync(preferred)) {
+    return preferred
+  }
+  const safe = path.join(aigwDir, 'profiles', 'safe.yaml')
+  if (fs.existsSync(safe)) {
+    return safe
+  }
+  return preferred
 }
 
 // --- aigw composite-token persistence -------------------------------------
@@ -7700,12 +7815,61 @@ function loadAigwToken(): string | undefined {
   }
 }
 
+// Whether the user's `agy` CLI (Antigravity / Google Cloud Code) is installed
+// and resolvable on PATH. Mirrors the resolution aigw itself uses
+// (shutil.which, which honours PATHEXT on Windows), so a gateway started here
+// will find the same binary the provider spawns.
+function isAgyOnPath(): boolean {
+  try {
+    if (IS_WINDOWS) {
+      // `where` is the Windows builtin that respects PATH + PATHEXT.
+      execFileSync('where', ['agy'], { stdio: 'ignore', windowsHide: true, timeout: 8000 })
+    } else {
+      execFileSync('sh', ['-c', 'command -v agy'], { stdio: 'ignore', timeout: 8000 })
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 // Spawn the aigw gateway with a specific config + extra env, then poll its
 // health endpoint until ready (or time out). Best-effort: returns ok:false with
 // a baseUrl of undefined on failure so callers can treat the gateway as
 // optional. The renderer still shows the connected app's models from its own
 // persisted store even when the gateway isn't up yet.
+// On Windows, desktop GUI apps do NOT inherit the system proxy as environment
+// variables. aigw's httpx client honours HTTP(S)_PROXY env vars (trust_env),
+// so without this it would try to reach Google directly and fail with
+// ConnectError. Read the WinHTTP/IE proxy from the registry and forward it to
+// the aigw child process (and its OAuth bootstrap) as env vars.
+function resolveSystemProxyEnv(): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (process.platform !== 'win32') return out
+  try {
+    const raw = execFileSync(
+      'reg',
+      ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings', '/v', 'ProxyServer'],
+      { windowsHide: true, timeout: 5000 }
+    ).toString()
+    const m = raw.match(/ProxyServer\s+REG_SZ\s+(.+)/)
+    if (!m) return out
+    let proxy = m[1].trim()
+    if (proxy && !/^https?:\/\//i.test(proxy)) proxy = 'http://' + proxy
+    out.HTTP_PROXY = proxy
+    out.HTTPS_PROXY = proxy
+    out.http_proxy = proxy
+    out.https_proxy = proxy
+    out.NO_PROXY = 'localhost,127.0.0.1'
+    out.no_proxy = 'localhost,127.0.0.1'
+  } catch {
+    /* no system proxy configured — leave env untouched */
+  }
+  return out
+}
+
 async function startAigwGateway(
+  appId: string,
   configPath: string,
   extraEnv: Record<string, string>,
   opts: { port: number; apiKey: string; timeoutMs?: number } = { port: 8019, apiKey: 'sk-local-antigravity', timeoutMs: 20000 }
@@ -7714,12 +7878,31 @@ async function startAigwGateway(
     return { ok: false, error: `aigw config not found at ${configPath}` }
   }
 
+  // If a gateway for this app is already running, reuse it instead of spawning
+  // a second process that would fail to bind the same port (e.g. a repeated
+  // connect click). Only reuse when it actually answers healthz.
+  const existing = getAigwChild(appId)
+  if (existing !== null && !existing.killed) {
+    const existingBase = `http://127.0.0.1:${opts.port}/v1`
+    try {
+      const probe = await fetch(`${existingBase.replace(/\/v1$/, '')}/healthz`, {
+        headers: { Authorization: `Bearer ${opts.apiKey}` },
+        signal: AbortSignal.timeout(3000)
+      })
+      if (probe.ok) {
+        return { ok: true, baseUrl: existingBase, pid: existing.pid ?? null }
+      }
+    } catch {
+      // stale child — fall through and respawn below
+    }
+  }
+
   const aigwDir = path.dirname(configPath)
   const python = resolveAigwPython(aigwDir)
   // Prefer an explicitly-passed token (e.g. from the auth flow); fall back to a
   // previously persisted one so a restart can self-heal without re-login.
   const token = extraEnv.ANTIGRAVITY_REFRESH_TOKEN ?? loadAigwToken() ?? ''
-  const env = { ...process.env, AIGW_CONFIG: configPath, PYTHONUNBUFFERED: '1', ...(token ? { ANTIGRAVITY_REFRESH_TOKEN: token } : {}), ...extraEnv }
+  const env = { ...process.env, ...resolveSystemProxyEnv(), AIGW_CONFIG: configPath, PYTHONUNBUFFERED: '1', ...(token ? { ANTIGRAVITY_REFRESH_TOKEN: token } : {}), ...extraEnv }
   const baseUrl = `http://127.0.0.1:${opts.port}/v1`
 
   let child: ReturnType<typeof spawn>
@@ -7737,11 +7920,11 @@ async function startAigwGateway(
   child.stdout?.on('data', (d: Buffer) => logAigw(d.toString()))
   child.stderr?.on('data', (d: Buffer) => logAigw(d.toString()))
   child.on('exit', (code: number | null) => {
-    aigwChild = null
-    logAigw(`aigw (${opts.port}) exited with code ${code}`)
+    clearAigwChild(appId)
+    logAigw(`aigw ${appId} (${opts.port}) exited with code ${code}`)
   })
 
-  aigwChild = child
+  setAigwChild(appId, child)
 
   // Poll healthz until ready.
   const deadline = Date.now() + (opts.timeoutMs ?? 20000)
@@ -7767,143 +7950,364 @@ async function startAigwGateway(
 }
 
 const AIGW_PORT = 8019
+// Per-app gateway ports / api keys. Antigravity keeps the legacy 8019; Workbuddy
+// gets its own 8020 so the two routes never contend for a port / key.
+const AIGW_APP_PORTS: Record<string, number> = { antigravity: 8019, workbuddy: 8020, cursor: 8021 }
+function aigwPortFor(appId: string): number {
+  return AIGW_APP_PORTS[appId] ?? AIGW_PORT
+}
+function aigwApiKeyFor(appId: string): string {
+  return `sk-local-${appId}`
+}
 
-ipcMain.handle('vaelis-gateway:status', async () => {
-  const running = aigwChild !== null && !aigwChild.killed
+ipcMain.handle('vaelis-gateway:status', async (_event, appId: string = 'antigravity') => {
+  const child = getAigwChild(appId)
+  const running = child !== null && !child.killed
+  const port = aigwPortFor(appId)
 
   return {
     running,
-    pid: running ? aigwChild.pid : null,
-    baseUrl: `http://127.0.0.1:${AIGW_PORT}/v1`,
-    port: AIGW_PORT
+    pid: running ? child.pid : null,
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    port
   }
 })
 
-ipcMain.handle('vaelis-gateway:start', async () => {
-  if (aigwChild !== null && !aigwChild.killed) {
-    return { ok: true, running: true, baseUrl: `http://127.0.0.1:${AIGW_PORT}/v1` }
+ipcMain.handle('vaelis-gateway:start', async (_event, appId: string = 'antigravity') => {
+  const port = aigwPortFor(appId)
+  const apiKey = aigwApiKeyFor(appId)
+  const existing = getAigwChild(appId)
+
+  if (existing !== null && !existing.killed) {
+    return { ok: true, running: true, baseUrl: `http://127.0.0.1:${port}/v1` }
   }
 
   const aigwDir = resolveAigwDir()
-  const configPath = resolveAigwConfig(aigwDir)
+  const configPath = resolveAigwConfig(aigwDir, appId)
 
   if (!fs.existsSync(configPath)) {
     return { ok: false, error: `aigw config not found at ${configPath}` }
   }
 
-  const python = resolveAigwPython(aigwDir)
   // Reuse a previously persisted composite token so Start after a restart works
   // without the user re-running `aigw auth`.
   const token = loadAigwToken()
-  const env = { ...process.env, AIGW_CONFIG: configPath, PYTHONUNBUFFERED: '1', ...(token ? { ANTIGRAVITY_REFRESH_TOKEN: token } : {}) }
-
-  logAigw(`starting: ${python} -m aigw start --config ${configPath} --port ${AIGW_PORT}`)
-
-  try {
-    aigwChild = spawn(
-      python,
-      ['-m', 'aigw', 'start', '--config', configPath, '--host', '127.0.0.1', '--port', String(AIGW_PORT)],
-      { cwd: aigwDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false }
-    )
-  } catch (err) {
-    return { ok: false, error: `failed to spawn aigw: ${String(err)}` }
+  const gw = await startAigwGateway(
+    appId,
+    configPath,
+    { ...(token ? { ANTIGRAVITY_REFRESH_TOKEN: token } : {}) },
+    { port, apiKey, timeoutMs: 20000 }
+  )
+  if (!gw.ok) {
+    return { ok: false, error: gw.error || 'aigw gateway failed to start' }
   }
 
-  aigwChild.stdout?.on('data', (d: Buffer) => logAigw(d.toString()))
-  aigwChild.stderr?.on('data', (d: Buffer) => logAigw(d.toString()))
-  aigwChild.on('exit', (code: number | null) => {
-    aigwChild = null
-    logAigw(`exited with code ${code}`)
-  })
-
-  return { ok: true, running: true, baseUrl: `http://127.0.0.1:${AIGW_PORT}/v1`, pid: aigwChild.pid ?? null }
+  return { ok: true, running: true, baseUrl: gw.baseUrl, pid: gw.pid ?? null }
 })
 
-ipcMain.handle('vaelis-gateway:stop', async () => {
-  if (aigwChild === null) {
-    return { ok: true, running: false }
-  }
+ipcMain.handle('vaelis-gateway:stop', async (_event, appId?: string) => {
+  const ids = appId ? [appId] : [...aigwChildren.keys()]
 
-  try {
-    aigwChild.kill('SIGTERM')
-  } catch {
-    /* ignore */
-  }
+  for (const id of ids) {
+    const child = getAigwChild(id)
 
-  aigwChild = null
+    if (child) {
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* ignore */
+      }
+
+      clearAigwChild(id)
+    }
+  }
 
   return { ok: true, running: false }
 })
 
 ipcMain.handle('vaelis-gateway:auth', async (_event, appId: string) => {
-  // Only antigravity has a verified OAuth bootstrap right now.
-  if (appId !== 'antigravity') {
-    return { ok: false, error: `auth not implemented for '${appId}' (only antigravity is supported)` }
+  const aigwDir = resolveAigwDir()
+
+  if (appId === 'antigravity') {
+    return authAntigravity(aigwDir)
+  }
+  if (appId === 'workbuddy') {
+    return authWorkbuddy(aigwDir)
+  }
+  if (appId === 'cursor') {
+    return authCursor(aigwDir)
+  }
+  return { ok: false, error: `auth not implemented for '${appId}'` }
+})
+
+// Antigravity: Google OAuth (browser login) → persist composite refresh token →
+// start the token-based gateway on 8019.
+async function authAntigravity(aigwDir: string): Promise<{
+  ok: boolean
+  baseUrl?: string
+  models?: string[]
+  code?: string
+  error?: string
+}> {
+  const configPath = path.join(aigwDir, 'config.antigravity-desktop.yaml')
+
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, error: `aigw desktop config not found at ${configPath}` }
   }
 
-  const aigwDir = resolveAigwDir()
   const python = resolveAigwPython(aigwDir)
-  const env = { ...process.env, PYTHONUNBUFFERED: '1' }
 
-  logAigw(`auth: ${python} -m aigw auth ${appId}`)
+  // Reuse any previously persisted token so the user doesn't have to re-login
+  // on every reconnect / app restart.
+  let refreshToken = loadAigwToken()
 
-  return new Promise<{ ok: boolean; token?: string; baseUrl?: string; models?: string[]; error?: string }>((resolve) => {
+  if (!refreshToken) {
+    logAigw('auth: no saved token — running aigw auth antigravity (OAuth bootstrap)')
+
+    try {
+      refreshToken = await runAigwAuthAntigravity(python, aigwDir)
+
+      if (!refreshToken) {
+        return { ok: false, code: 'AUTH_FAILED', error: 'Antigravity OAuth authentication failed or was cancelled.' }
+      }
+
+      // Persist so future launches can skip the browser login.
+      persistAigwToken(refreshToken)
+      logAigw('auth: OAuth token obtained and persisted')
+    } catch (err: any) {
+      logAigw(`auth: aigw auth antigravity error: ${err?.message ?? err}`)
+      return {
+        ok: false,
+        code: 'AUTH_ERROR',
+        error: `Antigravity authentication error: ${err?.message ?? String(err)}`
+      }
+    }
+  } else {
+    logAigw('auth: using previously saved token')
+  }
+
+  return finishGatewayAuth(
+    'antigravity',
+    configPath,
+    { AIGW_KEY: 'sk-local-antigravity', ANTIGRAVITY_REFRESH_TOKEN: refreshToken }
+  )
+}
+
+// Workbuddy: no OAuth — it rides on the user's already-logged-in Workbuddy (CLI
+// on PATH, or the Desktop app via Windows UI Automation). Detect which route is
+// available, then start the hybrid gateway on 8020.
+async function authWorkbuddy(aigwDir: string): Promise<{
+  ok: boolean
+  baseUrl?: string
+  models?: string[]
+  code?: string
+  installHint?: string
+  error?: string
+}> {
+  const configPath = path.join(aigwDir, 'config.workbuddy-desktop.yaml')
+
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, error: `aigw desktop config not found at ${configPath}` }
+  }
+
+  const route = detectLocalWorkbuddy()
+  logAigw(`auth: workbuddy local detection -> ${route ?? 'none'}`)
+
+  if (!route) {
+    return {
+      ok: false,
+      code: 'WORKBUDDY_NOT_FOUND',
+      installHint: '未检测到本地 Workbuddy：请把 workbuddy CLI 加入 PATH，或确保 Workbuddy 桌面端正在运行。',
+      error: 'No local Workbuddy detected (CLI not on PATH and no Workbuddy/Vaelis process running).'
+    }
+  }
+
+  return finishGatewayAuth('workbuddy', configPath, { AIGW_KEY: 'sk-local-workbuddy' })
+}
+
+// Cursor: no OAuth — it rides on the user's already-logged-in Cursor session
+// (token + machine ids read from %APPDATA%\Cursor\User\globalStorage). Detect
+// the local Cursor data, then start the gateway on 8021.
+async function authCursor(aigwDir: string): Promise<{
+  ok: boolean
+  baseUrl?: string
+  models?: string[]
+  code?: string
+  installHint?: string
+  error?: string
+}> {
+  const configPath = path.join(aigwDir, 'config.cursor-desktop.yaml')
+
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, error: `aigw desktop config not found at ${configPath}` }
+  }
+
+  const found = detectLocalCursor()
+  logAigw(`auth: cursor local detection -> ${found ? 'found' : 'none'}`)
+
+  if (!found) {
+    return {
+      ok: false,
+      code: 'CURSOR_NOT_FOUND',
+      installHint: '未检测到本地 Cursor：请确认 Cursor 桌面端已安装并至少成功登录过一次。',
+      error: 'No local Cursor detected (state.vscdb not found in the Cursor user data dir).'
+    }
+  }
+
+  return finishGatewayAuth('cursor', configPath, { AIGW_KEY: 'sk-local-cursor' })
+}
+
+// Whether a local Cursor installation has a session we can read.
+function detectLocalCursor(): boolean {
+  try {
+    const base = path.join(
+      app.getPath('appData'),
+      'Cursor',
+      'User',
+      'globalStorage',
+      'state.vscdb'
+    )
+    return fs.existsSync(base)
+  } catch {
+    return false
+  }
+}
+
+// Shared tail for both providers: start the per-app gateway and return its live
+// model catalog (fetched from /v1/models, filtered by provider).
+async function finishGatewayAuth(
+  appId: string,
+  configPath: string,
+  extraEnv: Record<string, string>
+): Promise<{ ok: boolean; baseUrl?: string; models?: string[]; error?: string }> {
+  const port = aigwPortFor(appId)
+  const apiKey = aigwApiKeyFor(appId)
+
+  logAigw(`auth: starting ${appId} gateway (${configPath})`)
+
+  const gw = await startAigwGateway(appId, configPath, extraEnv, { port, apiKey, timeoutMs: 20000 })
+
+  if (!gw.ok) {
+    return { ok: false, error: gw.error || 'aigw gateway failed to start' }
+  }
+
+  const models = await fetchGatewayModels(gw.baseUrl ?? `http://127.0.0.1:${port}/v1`, apiKey, appId)
+
+  return { ok: true, baseUrl: gw.baseUrl, models: models ?? [] }
+}
+
+// Detect a locally-available Workbuddy: prefer the CLI on PATH, else a running
+// Workbuddy/Vaelis desktop process (Windows UI Automation route).
+function detectLocalWorkbuddy(): 'cli' | 'gui' | null {
+  try {
+    execFileSync('where.exe', ['workbuddy'], { windowsHide: true, timeout: 5000 })
+    return 'cli'
+  } catch {
+    /* CLI not on PATH — fall through to process check */
+  }
+
+  try {
+    const out = execFileSync('tasklist', ['/fo', 'csv', '/nh'], { windowsHide: true, timeout: 5000 }).toString()
+    if (/\b(?:workbuddy|vaelis)\.exe/i.test(out)) {
+      return 'gui'
+    }
+  } catch {
+    /* tasklist unavailable */
+  }
+
+  return null
+}
+
+// Fetch the live model catalog for one app from its aigw gateway's /v1/models.
+async function fetchGatewayModels(baseUrl: string, apiKey: string, appId: string): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/v1$/, '')}/v1/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000)
+    })
+
+    if (!res.ok) {
+      return null
+    }
+
+    const data = (await res.json()) as { data?: Array<{ id?: string; provider?: string }> }
+    const ids = (data.data ?? [])
+      .filter((m) => m?.provider === appId && typeof m.id === 'string')
+      .map((m) => m.id!.replace(new RegExp(`^${appId}/`), ''))
+      .filter(Boolean)
+
+    return ids.length ? ids : null
+  } catch {
+    return null
+  }
+}
+
+// Run `aigw auth antigravity` as a child process, capture its stdout, and
+// extract the composite refresh token ("rt|projectId|mpid" on the final success
+// line). Returns the token string, or undefined if auth failed/was cancelled.
+function runAigwAuthAntigravity(python: string, aigwDir: string): Promise<string | undefined> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      python,
+      ['-m', 'aigw', 'auth', 'antigravity'],
+      { cwd: aigwDir, env: { ...process.env, ...resolveSystemProxyEnv(), PYTHONUNBUFFERED: '1' }, stdio: ['ignore', 'pipe', 'pipe'], detached: false }
+    )
+
     let stdout = ''
     let stderr = ''
 
-    try {
-      const child = spawn(
-        python, ['-m', 'aigw', 'auth', appId],
-        { cwd: aigwDir, env, stdio: ['ignore', 'pipe', 'pipe'] }
-      )
+    child.stdout?.on('data', (d: Buffer) => {
+      const chunk = d.toString()
+      stdout += chunk
+      logAigw(`[aigw-auth] ${chunk.trimEnd()}`)
+    })
 
-      child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); logAigw(d.toString()) })
-      child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); logAigw(d.toString()) })
+    child.stderr?.on('data', (d: Buffer) => {
+      const chunk = d.toString()
+      stderr += chunk
+      logAigw(`[aigw-auth:err] ${chunk.trimEnd()}`)
+    })
 
-      child.on('exit', async (code: number | null) => {
-        if (code === 0) {
-          // Extract composite token from stdout (the bootstrap prints it between ===== lines)
-          const match = stdout.match(/={2,}\s*\n\s*(1\/\/[^\n]+)\s*\n\s*={2,}/)
-          const token = match ? match[1].trim() : ''
+    // Timeout after 5 minutes (user may need time to complete Google sign-in)
+    const timeout = setTimeout(() => {
+      logAigw('auth: aigw auth antigravity timed out after 5 minutes')
+      try { child.kill() } catch { /* ignore */ }
+      reject(new Error('Authentication timed out — please try again.'))
+    }, 300_000)
 
-          if (!token) {
-            resolve({ ok: false, error: 'aigw auth succeeded but no token was captured' })
+    child.on('exit', (code: number | null) => {
+      clearTimeout(timeout)
 
-            return
-          }
+      if (code !== 0) {
+        reject(new Error(stderr.trim() || `aigw auth exited with code ${code}`))
+        return
+      }
 
-          // Persist so a future app restart can self-heal the gateway without
-          // forcing the user through `aigw auth` again (zero user awareness).
-          persistAigwToken(token)
-
-          // Best-effort: bring the antigravity aigw gateway up so the models are
-          // immediately routable. Failure here does NOT fail the auth — the
-          // renderer still shows the models from its persisted store.
-          const gw = await startAigwGateway(
-            path.join(aigwDir, 'config.antigravity.yaml'),
-            { ANTIGRAVITY_REFRESH_TOKEN: token, AIGW_KEY: 'sk-local-antigravity' },
-            { port: 8019, apiKey: 'sk-local-antigravity', timeoutMs: 20000 }
-          )
-
-          resolve({
-            ok: true,
-            token,
-            baseUrl: gw.baseUrl,
-            models: ['gemini-3-pro', 'gemini-3-flash', 'claude-sonnet-4-6']
-          })
-        } else {
-          resolve({ ok: false, error: `aigw auth exited with code ${code}: ${stderr.slice(-300)}` })
+      // The OAuth bootstrap prints the composite token on its final line:
+      //   ✅ SUCCESS — Antigravity composite refresh token
+      //   ==================================================
+      //     <refresh_token>|<project_id>|
+      //
+      // We parse the last non-empty line that looks like a composite token.
+      const lines = stdout.split('\n').filter(l => l.trim())
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim()
+        // Composite format: "rt|projectId|" or "rt|projectId|mpid"
+        if (/^[^|]+\|[^\|]*\|[^\|]*$/.test(line)) {
+          resolve(line)
+          return
         }
-      })
+      }
 
-      child.on('error', (err: Error) => {
-        resolve({ ok: false, error: `failed to spawn aigw auth: ${String(err)}` })
-      })
-    } catch (err) {
-      resolve({ ok: false, error: `spawn exception: ${String(err)}` })
-    }
+      resolve(undefined)
+    })
+
+    child.on('error', (err: Error) => {
+      clearTimeout(timeout)
+      reject(err)
+    })
   })
-})
+}
 
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)

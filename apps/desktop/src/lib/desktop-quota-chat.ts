@@ -207,6 +207,17 @@ export async function streamDesktopQuotaChat(req: DesktopQuotaChatRequest): Prom
           return
         }
 
+        // The aigw hub forwards upstream failures (e.g. Google Code Assist's
+        // "User location is not supported" region lock) as a
+        // `data: {"error": {"message": ...}}` SSE frame with HTTP 200 — the
+        // generator raised inside the stream, so the server can't change the
+        // status code. Surface it instead of silently completing an empty turn.
+        if (delta.error) {
+          handlers.failAssistantMessage(sessionId, delta.error)
+
+          return
+        }
+
         if (delta.content) {
           sawAnyChunk = true
           assistantText += delta.content
@@ -244,6 +255,7 @@ export async function streamDesktopQuotaChat(req: DesktopQuotaChatRequest): Prom
 interface ParsedDelta {
   content: string
   reasoning: string
+  error?: string
 }
 
 /** Returns null for the [DONE] sentinel, otherwise the concatenated delta. */
@@ -269,6 +281,7 @@ function parseSseFrame(frame: string): ParsedDelta | null {
 
   try {
     const parsed = JSON.parse(dataLine) as {
+      error?: { message?: string }
       choices?: Array<{
         delta?: {
           content?: string
@@ -276,6 +289,11 @@ function parseSseFrame(frame: string): ParsedDelta | null {
           reasoning_content?: string
         }
       }>
+    }
+
+    // Upstream error envelope forwarded by the aigw hub (see main.py:_sse).
+    if (parsed.error && typeof parsed.error.message === 'string') {
+      return { content: '', reasoning: '', error: parsed.error.message }
     }
 
     const delta = parsed.choices?.[0]?.delta ?? {}
