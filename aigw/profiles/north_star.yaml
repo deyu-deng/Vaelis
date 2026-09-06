@@ -1,0 +1,19 @@
+# aigw profile — North Star bypass path (Antigravity etc.)
+# HID remains primary for Marvis; this profile is the software fallback.
+
+aliases:
+  vaelis/master-bypass: antigravity_cli/gemini-3-flash
+  vaelis/antigravity: antigravity_cli/gemini-3-flash
+
+routing:
+  rules:
+    - match: "vaelis/antigravity"
+      providers: [antigravity_cli, mock]
+      model: antigravity_cli/gemini-3-flash
+    - match: "auto"
+      providers: [antigravity_cli, mock]
+      model: antigravity_cli/gemini-3-flash
+
+# Notes:
+# - Marvis is NOT routed here (GUI/HID only).
+# - Cursor reverse path stays exploratory; prefer HID adapter until stable.

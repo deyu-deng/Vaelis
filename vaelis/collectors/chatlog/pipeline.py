@@ -1,0 +1,364 @@
+"""Collect → filter → confirm → ingest.
+
+Order matters and is the privacy contract:
+
+1. scope       — `CollectorConfig.mode` decides which talkers are in scope:
+                  blacklist enumerates every conversation and drops blacklisted
+                  ones (empty blacklist = all); whitelist reads only named
+                  talkers (fail-closed).
+2. dedupe      — webhook and sweep both deliver; only one wins
+3. local rules — on-device; decides what may leave the machine at all
+4. confirm     — heuristic first, model only for the remainder (snippet only)
+5. ingest      — lands as ``pending`` for the human to confirm (ADR-0009)
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from typing import Optional
+
+from vaelis.agenda import AgendaService, get_service
+from vaelis.agenda.rules import match as rule_match
+from vaelis.agenda.rules import snippet
+
+from .client import ChatlogClient, ChatlogUnavailable, ChatMessage
+from .config import CollectorConfig
+from .confirm import Candidate, Confirmer, HeuristicConfirmer
+from .state import SeenStore, TalkerStore
+
+logger = logging.getLogger(__name__)
+
+# Two events count as "the same thing rescheduled" when they fall on the same
+# day and share this much of their keyword set.
+_MATCH_KEYWORDS = ("组会", "例会", "会议", "开会", "答辩", "面试", "课", "培训", "宣讲", "聚餐")
+
+
+@dataclass
+class IngestReport:
+    scanned: int = 0
+    skipped_duplicate: int = 0
+    skipped_not_whitelisted: int = 0
+    # ADR-0010 (blacklist mode): a reviewed-but-excluded talker, or a brand-new
+    # talker we refused to touch (fail-closed, recorded as pending).
+    skipped_excluded: int = 0
+    skipped_new_talker: int = 0
+    # First-run review not done yet: candidates enumerated but nothing swept.
+    review_gated: int = 0
+    filtered_out: int = 0
+    unresolved: int = 0
+    created: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+
+    @property
+    def pending_ids(self) -> list[str]:
+        return [*self.created, *self.updated]
+
+    def as_dict(self) -> dict:
+        return {
+            "scanned": self.scanned,
+            "skipped_duplicate": self.skipped_duplicate,
+            "skipped_not_whitelisted": self.skipped_not_whitelisted,
+            "skipped_excluded": self.skipped_excluded,
+            "skipped_new_talker": self.skipped_new_talker,
+            "review_gated": self.review_gated,
+            "filtered_out": self.filtered_out,
+            "unresolved": self.unresolved,
+            "created": list(self.created),
+            "updated": list(self.updated),
+        }
+
+
+def _topic_tokens(text: str) -> set[str]:
+    return {word for word in _MATCH_KEYWORDS if word in text}
+
+
+class ChatlogPipeline:
+    def __init__(
+        self,
+        *,
+        config: Optional[CollectorConfig] = None,
+        client: Optional[ChatlogClient] = None,
+        service: Optional[AgendaService] = None,
+        seen: Optional[SeenStore] = None,
+        talkers: Optional[TalkerStore] = None,
+        confirmer: Optional[Confirmer] = None,
+    ):
+        self.config = config or CollectorConfig.load()
+        self.client = client or ChatlogClient(self.config.base_url)
+        self.service = service or get_service()
+        self.seen = seen or SeenStore()
+        self.talkers = talkers or TalkerStore()
+        self.confirmer = confirmer or HeuristicConfirmer(tier_of=self.config.tier_of)
+
+    # --- single message -----------------------------------------------------
+
+    def handle_message(self, message: ChatMessage, report: IngestReport) -> None:
+        report.scanned += 1
+
+        if not self.config.allows(message.talker):
+            report.skipped_not_whitelisted += 1
+            return
+
+        # ADR-0010 (blacklist mode): the talker status table gates admission.
+        # Everything that is not `known` is refused — a new talker is recorded
+        # as pending (board-visible) but never ingested.
+        if self.config.mode == "blacklist":
+            status = self.talkers.status_of(message.talker)
+            if status == "excluded":
+                report.skipped_excluded += 1
+                return
+            if status != "known":
+                self.talkers.mark_pending(message.talker)
+                report.skipped_new_talker += 1
+                return
+
+        if not self.seen.mark_seen(message.msg_id):
+            report.skipped_duplicate += 1
+            return
+
+        hit = rule_match(message.content)
+        if hit is None:
+            report.filtered_out += 1
+            return
+
+        candidate = self.confirmer.confirm(message, hit)
+        if candidate is None:
+            report.unresolved += 1
+            return
+
+        evidence = {
+            "msg_id": message.msg_id,
+            "talker": message.talker,
+            "sent_at": message.sent_at,
+            # Only the matched snippet is ever persisted or forwarded.
+            "snippet": snippet(message.content),
+            # Source weight: "task"-tier talkers get a higher number so the
+            # board / report can surface them above "info" noise. This is the
+            # only behaviour change tied to tiers — everything else is gated
+            # upstream by the scope layer.
+            "tier": candidate.tier,
+            "source_weight": candidate.weight,
+        }
+
+        target_id = self._find_change_target(candidate) if candidate.is_change else None
+
+        result = self.service.ingest_candidate(
+            title=candidate.title,
+            start_at=candidate.start_at,
+            end_at=candidate.end_at,
+            kind=candidate.kind,
+            source="wechat",
+            evidence=evidence,
+            target_event_id=target_id,
+        )
+
+        if not result.changed_fields:
+            # Nothing actually moved — do not nag the user about a no-op.
+            return
+
+        if result.created:
+            report.created.append(result.event.id)
+        else:
+            report.updated.append(result.event.id)
+
+    def _find_change_target(self, candidate: Candidate) -> Optional[str]:
+        """Best-effort: which existing event is this message rescheduling?
+
+        Same day plus a shared topic word is a deliberately conservative test —
+        a wrong guess would rewrite an unrelated entry, and the fallback
+        (creating a separate pending entry) is cheap for the user to dismiss.
+        """
+        try:
+            day = datetime.fromisoformat(candidate.start_at).date()
+        except ValueError:
+            return None
+
+        wanted = _topic_tokens(candidate.title)
+        if not wanted:
+            return None
+
+        start = datetime.combine(day, datetime.min.time())
+        end = datetime.combine(day, datetime.max.time())
+
+        for event in self.service.list_agenda(start, end):
+            # Skip manual entries — the user entered these; a change message
+            # about the same topic should create a new pending entry, not
+            # latch onto the user's own record.
+            if event.source == "manual":
+                continue
+            # Only match against *confirmed* events — pending events are
+            # already awaiting user decision and should not be re-targeted
+            # by a new change message, which would create notification loops.
+            if event.status == "confirmed":
+                if _topic_tokens(event.title) & wanted:
+                    return event.id
+        return None
+
+    # --- batch --------------------------------------------------------------
+
+    def run_once(self, day: Optional[date] = None) -> IngestReport:
+        """Sweep conversations for one day. Safe to call repeatedly.
+
+        Mode drives which talkers are swept:
+          * blacklist — enumerate every conversation (``/api/v1/session``),
+            drop the blacklisted ones, then sweep only ``known`` talkers.
+            Unreviewed talkers are never touched: during the first-run review
+            (``review_done`` false) nothing is swept at all; afterwards a
+            brand-new talker is recorded as ``pending`` for the board instead
+            of being collected (fail-closed, ADR-0010 revision).
+          * whitelist (default, fail-closed) — only the named ``talkers``.
+        """
+        report = IngestReport()
+
+        if not self.config.enabled:
+            logger.debug("chatlog collector disabled in config; nothing scanned")
+            return report
+
+        if self.config.mode == "blacklist":
+            try:
+                candidates = self.client.list_talkers()
+            except ChatlogUnavailable as exc:
+                logger.warning("chatlog session enumeration failed: %s", exc)
+                return report
+            black = set(self.config.blacklist)
+            candidates = [t for t in candidates if t not in black]
+            if not candidates:
+                logger.warning(
+                    "blacklist mode: no talkers enumerated (chatlog empty or down)"
+                )
+                return report
+
+            # First-run review gate: nothing is swept until the user has
+            # reviewed the existing sessions (see /api/collect/review-complete).
+            if not self.talkers.review_done():
+                report.review_gated = len(candidates)
+                logger.info(
+                    "blacklist mode: %d candidate talkers gated until the "
+                    "first-run review completes (POST /api/collect/review-complete)",
+                    report.review_gated,
+                )
+                return report
+
+            talkers = []
+            for talker in candidates:
+                status = self.talkers.status_of(talker)
+                if status == "excluded":
+                    report.skipped_excluded += 1
+                    continue
+                if status == "known":
+                    talkers.append(talker)
+                    continue
+                # Fail-closed: never collected, surfaced as pending instead.
+                self.talkers.mark_pending(talker)
+                report.skipped_new_talker += 1
+
+            if not talkers:
+                logger.warning("blacklist mode: no known talkers to sweep")
+                return report
+        else:
+            if not self.config.talkers:
+                logger.warning("chatlog collector enabled but the whitelist is empty")
+                return report
+            talkers = self.config.talkers
+
+        for talker in talkers:
+            try:
+                messages = self.client.fetch(talker, day)
+            except ChatlogUnavailable as exc:
+                # Service down or WeChat logged out — surface once, keep going.
+                logger.warning("chatlog fetch failed for %s: %s", talker, exc)
+                continue
+
+            for message in messages:
+                self.handle_message(message, report)
+
+        return report
+
+
+class ChatlogDead(RuntimeError):
+    """Dead door: chatlog is down or consecutively failing.
+
+    §8.2 Z4 — L1 must say collection is unreachable. Never return an empty
+    successful agenda as if the sweep ran.
+    """
+
+
+def chatlog_is_healthy(client) -> bool:
+    """True when ``client.healthy()`` succeeds. Any exception is unhealthy."""
+    healthy = getattr(client, "healthy", None)
+    if healthy is None:
+        return False
+    try:
+        return bool(healthy())
+    except Exception:
+        return False
+
+
+def _event_brief(event) -> dict:
+    return {
+        "id": event.id,
+        "title": event.title,
+        "start_at": event.start_at,
+        "end_at": event.end_at,
+        "kind": event.kind,
+        "status": event.status,
+        "source": event.source,
+    }
+
+
+def agenda_window_summary(service=None, *, now: Optional[datetime] = None) -> dict:
+    """Structured today + tomorrow events for L1 to turn into speech (Q1).
+
+    Zero chat API — this is a SQLite read through :class:`AgendaService`.
+    """
+    from vaelis.agenda import get_service
+
+    moment = now or datetime.now()
+    today = moment.date()
+    tomorrow = today + timedelta(days=1)
+    svc = service or get_service()
+    events = svc.list_agenda(
+        datetime.combine(today, datetime.min.time()),
+        datetime.combine(tomorrow, datetime.max.time()),
+    )
+    today_events: list[dict] = []
+    tomorrow_events: list[dict] = []
+    for event in events:
+        try:
+            day = datetime.fromisoformat(str(event.start_at)).date()
+        except ValueError:
+            day = today
+        brief = _event_brief(event)
+        if day == tomorrow:
+            tomorrow_events.append(brief)
+        else:
+            today_events.append(brief)
+    return {
+        "today": today.isoformat(),
+        "tomorrow": tomorrow.isoformat(),
+        "today_events": today_events,
+        "tomorrow_events": tomorrow_events,
+        "events": [*today_events, *tomorrow_events],
+    }
+
+
+def refresh_agenda(
+    *,
+    pipeline: Optional[ChatlogPipeline] = None,
+    now: Optional[datetime] = None,
+) -> tuple[IngestReport, dict]:
+    """One collection sweep + board snapshot for ``vaelis_secretary_ask``.
+
+    Raises :class:`ChatlogDead` when chatlog is not healthy. Does not invent
+    events. Uncertain new messages still go through the pipeline confirmer
+    (H2: heuristic, then existing ``model_confirm`` — not aigw).
+    """
+    pipe = pipeline or ChatlogPipeline()
+    if not chatlog_is_healthy(pipe.client):
+        raise ChatlogDead("chatlog 未启动或 /health 失败，采集不通")
+    report = pipe.run_once()
+    summary = agenda_window_summary(pipe.service, now=now)
+    summary["ingest"] = report.as_dict()
+    return report, summary

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Installed via: python scripts/install_arch_hooks.py
+# Chains: docs discipline (existing) + ARCH-UI-MASTER §3.5 architecture gates.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+if [ -f "$ROOT/scripts/check-docs.sh" ]; then
+  bash "$ROOT/scripts/check-docs.sh"
+fi
+
+PY="$ROOT/.venv/Scripts/python.exe"
+if [ ! -f "$PY" ]; then
+  PY="$ROOT/.venv/bin/python"
+fi
+if [ ! -f "$PY" ]; then
+  PY="python3"
+fi
+
+"$PY" "$ROOT/scripts/check_arch_gates.py"
