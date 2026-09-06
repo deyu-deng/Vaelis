@@ -59,6 +59,42 @@ logger = logging.getLogger(__name__)
 MAX_DIGEST_TURNS = 40
 MAX_DIGEST_CHARS_PER_MSG = 1200
 
+# WP-MIND 读接缝：画像/项目状态窄切进上下文（MindReader 已按 4000 字符/文件
+# 截断；这里再按块收紧，保证召回注入永不淹没对话上下文）。
+PROFILE_MAX_CHARS_PER_SECTION = 800
+PROFILE_PROJECT_LIMIT = 3
+
+
+def _profile_block(root: Path) -> str:
+    """画像/项目状态的窄切读取（无模型、纯文件）。
+
+    来源：``Vault/meta/Persona.md`` + ``Vault/projects/<项目>/plan.md``/
+    ``progress.md``（MindReader，大写 Vaelis 是当前项目写入位）。为空返回
+    ``""``——调用方据此跳过注入，不产生空块。
+    """
+    from vaelis.mind.reader import MindReader
+
+    ctx = MindReader(root).context(project_limit=PROFILE_PROJECT_LIMIT)
+    if ctx.is_empty:
+        return ""
+
+    sections: List[str] = []
+    if ctx.persona:
+        persona = ctx.persona.strip()
+        if len(persona) > PROFILE_MAX_CHARS_PER_SECTION:
+            persona = persona[:PROFILE_MAX_CHARS_PER_SECTION].rstrip() + "…"
+        sections.append(f"### 用户画像\n{persona}")
+    for brief in ctx.projects:
+        piece = (brief.progress_excerpt or brief.plan_excerpt or "").strip()
+        if not piece:
+            continue
+        if len(piece) > PROFILE_MAX_CHARS_PER_SECTION:
+            piece = piece[:PROFILE_MAX_CHARS_PER_SECTION].rstrip() + "…"
+        sections.append(f"### 项目 {brief.name}\n{piece}")
+    if not sections:
+        return ""
+    return "[Mind 画像]\n" + "\n\n".join(sections)
+
 
 def _resolve_root() -> Path:
     """Resolve the Mind root.
@@ -124,6 +160,8 @@ class MindProvider(MemoryProvider):
         self._session_id: str = ""
         self._mind_root: Optional[Path] = None
         self._prefetch_cache: Dict[str, str] = {}
+        self._agent_context: str = "primary"
+        self._agenda_published_date: str = ""
 
     @property
     def name(self) -> str:
@@ -139,9 +177,11 @@ class MindProvider(MemoryProvider):
         """Resolve root + session. Builds a writer handle lazily on write."""
         self._session_id = session_id
         self._mind_root = _resolve_root()
+        # cron / flush 等非 primary 上下文不得往 Mind 写运行时摘要。
+        self._agent_context = str(kwargs.get("agent_context") or "primary")
         logger.info(
-            "[mind] initialized for session %s (root=%s)",
-            session_id, self._mind_root,
+            "[mind] initialized for session %s (root=%s, context=%s)",
+            session_id, self._mind_root, self._agent_context,
         )
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -150,20 +190,44 @@ class MindProvider(MemoryProvider):
 
     # -- recall (per-turn, injected as context) --------------------------
 
+    def _profile_summary(self) -> str:
+        """画像摘要（WP-MIND 读接缝）。任何失败都降级为告警 + 空串。"""
+        try:
+            root = _resolve_root()
+            if not root.is_dir():
+                return ""
+            return _profile_block(root)
+        except Exception as exc:  # noqa: BLE001 - recall must never crash a turn
+            logger.warning("[mind] profile summary read failed (non-fatal): %s", exc)
+            return ""
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant Mind snippets to inject into the system prompt.
+
+        WP-MIND：召回结果前置一份画像/项目状态摘要（``_profile_summary``），
+        帮助模型识别「在为谁服务、项目进行到哪」。该读取是窄切（persona +
+        最多 3 个项目简报，每段截断），只读、失败降级为告警。
 
         Checks the warm-up cache first (filled by ``queue_prefetch``), then
         falls back to a live keyword search over SAFE_PREFIXES. Returns an
         empty string when nothing relevant is found.
         """
+        parts: List[str] = []
+        profile = self._profile_summary()
+        if profile:
+            parts.append(profile)
+            logger.info(
+                "[mind] prefetch includes profile summary (%d chars)", len(profile)
+            )
+
         root = _resolve_root()
         if not root.is_dir() or not query:
-            return ""
+            return "\n\n".join(parts)
 
         cached = self._prefetch_cache.pop(query, None)
         if cached is not None:
-            return cached
+            parts.append(cached)
+            return "\n\n".join(parts)
 
         try:
             from .retrieval import search as _mind_search
@@ -171,8 +235,9 @@ class MindProvider(MemoryProvider):
             snippets = _mind_search(root, query, limit=5)
         except Exception as exc:  # noqa: BLE001 - recall must never crash a turn
             logger.warning("[mind] prefetch failed (non-fatal): %s", exc)
-            return ""
-        return "\n\n".join(snippets)
+            return "\n\n".join(parts)
+        parts.extend(snippets)
+        return "\n\n".join(parts)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue background recall for the NEXT turn.
