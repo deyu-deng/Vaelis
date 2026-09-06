@@ -56,6 +56,13 @@ _MASTER_TOOLS = (
         MT.SECRETARY_ASK_SCHEMA["description"],
         "📅",
     ),
+    (
+        "vaelis_checkin_respond",
+        MT.CHECKIN_RESPOND_SCHEMA,
+        MT.handle_checkin_respond,
+        MT.CHECKIN_RESPOND_SCHEMA["description"],
+        "🗓",
+    ),
 )
 
 _VAELIS_SCHEMA = {

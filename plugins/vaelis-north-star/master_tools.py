@@ -423,3 +423,133 @@ def handle_secretary_ask(args: dict, **kwargs) -> str:
         extra.setdefault("ok", False)
         return tool_error(result.get("error") or "secretary_ask failed", **extra)
     return json.dumps(result, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# C6b: daily check-in respond — config proposal card (R3: human-approved)
+# ---------------------------------------------------------------------------
+
+
+CHECKIN_RESPOND_SCHEMA = {
+    "name": "vaelis_checkin_respond",
+    "description": (
+        "秘书回访（C6）落地入口：仅当用户在回访会话里明确说了要改作息模板时间"
+        "或项目每周节奏时调用，把指令变成一张配置提案卡（确认 N 才生效，"
+        "本工具绝不直接改配置）。routine_updates 改作息模板 start/end_time；"
+        "pace_updates 改 l2_project 的每周节奏。用户只是闲聊、或没说清改什么"
+        " → 不要调用本工具，先用追问澄清。自由文本原话用 free_text 存档。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "routine_updates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "template_id": {
+                            "type": "string",
+                            "description": "作息模板 id（如 seed-sleep）",
+                        },
+                        "start_time": {
+                            "type": "string",
+                            "description": "HH:MM；省略表示不变",
+                        },
+                        "end_time": {
+                            "type": "string",
+                            "description": "HH:MM；省略表示不变",
+                        },
+                    },
+                    "required": ["template_id"],
+                },
+                "description": "作息模板修改列表；无则不传",
+            },
+            "pace_updates": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "project_id": {
+                            "type": "string",
+                            "description": "l2_project 项目名",
+                        },
+                        "weekly_hours": {
+                            "type": "number",
+                            "description": "每周目标小时数，(0, 168]",
+                        },
+                    },
+                    "required": ["project_id", "weekly_hours"],
+                },
+                "description": "项目节奏修改列表；无则不传",
+            },
+            "free_text": {
+                "type": "string",
+                "description": (
+                    "用户自由文本原话（可选）。原样追加存档到 Mind 当日 digest，"
+                    "不做解析、不产生提案。"
+                ),
+            },
+        },
+    },
+}
+
+
+def handle_checkin_respond(args: dict, **kwargs) -> str:
+    """C6b: 用户明确指令 → 配置提案卡。**绝不直接改配置**（R3 分级）。
+
+    只消化回访会话里用户的明确指令；校验与建卡全部复用
+    ``vaelis.agenda.checkin.propose_config_change``，落地走
+    ``AgendaService.confirm_card``（确认 N 既有链路），本工具不碰。
+    """
+    from datetime import datetime
+
+    from vaelis.agenda import checkin, store
+
+    routine_updates = args.get("routine_updates")
+    pace_updates = args.get("pace_updates")
+    free_text = str(args.get("free_text") or "").strip()
+    if routine_updates is not None and not isinstance(routine_updates, list):
+        return tool_error("routine_updates must be a list", ok=False)
+    if pace_updates is not None and not isinstance(pace_updates, list):
+        return tool_error("pace_updates must be a list", ok=False)
+    if not routine_updates and not pace_updates and not free_text:
+        return tool_error(
+            "nothing to do: pass routine_updates / pace_updates / free_text",
+            ok=False,
+        )
+
+    response: dict[str, Any] = {"ok": True}
+    if free_text:
+        try:
+            response["archived"] = checkin.archive_free_text(
+                free_text, day=datetime.now(), source="desktop"
+            )
+        except Exception as exc:  # 存档失败不挡提案
+            response["archived"] = False
+            response["archive_error"] = str(exc)
+
+    if routine_updates or pace_updates:
+        try:
+            conn = store.connect(None)
+            try:
+                card = checkin.propose_config_change(
+                    conn,
+                    routine_updates=routine_updates,
+                    pace_updates=pace_updates,
+                )
+            finally:
+                conn.close()
+        except store.AgendaValidationError as exc:
+            return tool_error(str(exc), ok=False)
+        except Exception as exc:  # 任何异常都不许打断 L1 会话
+            logger.warning("vaelis_checkin_respond failed: %s", exc)
+            return tool_error(f"checkin_respond failed: {exc}", ok=False)
+        response.update(
+            {
+                "card_id": card.id,
+                "confirm_seq": card.confirm_seq,
+                "questions": card.questions,
+                "note": "提案卡已创建；用户回复 确认N 后才落地（R3：改配置须人批）",
+            }
+        )
+    return json.dumps(response, ensure_ascii=False)
