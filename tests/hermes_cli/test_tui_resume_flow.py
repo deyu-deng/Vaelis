@@ -964,7 +964,7 @@ def test_launch_tui_applies_terminal_backend_config(
     assert captured["env"]["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
 
 
-def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):
+def test_launch_tui_exit_code_42_prints_disabled_notice(monkeypatch, main_mod, capsys):
     from unittest.mock import patch
 
     monkeypatch.setattr(
@@ -979,7 +979,11 @@ def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):
             main_mod._launch_tui()
 
     assert exc.value.code == 42
-    mock_relaunch.assert_called_once_with(["update"], preserve_inherited=False)
+    # Self-update is disabled in local dev builds - the 42 exit code must NOT
+    # trigger a ``hermes update`` relaunch; the disable notice is printed instead.
+    mock_relaunch.assert_not_called()
+    out = capsys.readouterr().out
+    assert main_mod._SELF_UPDATE_DISABLED_MSG in out
 
 
 def test_launch_tui_drops_stale_resume_env_without_resume_arg(monkeypatch, main_mod):

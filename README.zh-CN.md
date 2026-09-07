@@ -8,7 +8,7 @@
   <a href="https://github.com/deyu-deng/Vaelis/docs/"><img src="https://img.shields.io/badge/Docs-Vaelis-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="[Discord 社区占位]"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/deyu-deng/Vaelis/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="[官网占位]"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+  <a href="[官网占位]"><img src="https://img.shields.io/badge/Built%20by-Vaelis-blueviolet?style=for-the-badge" alt="Built by Vaelis"></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
 </p>
 
@@ -186,4 +186,4 @@ python -m pytest tests/ -q
 
 MIT — 详见 [LICENSE](LICENSE)。
 
-由 [Nous Research]([官网占位]) 构建。
+由 [Vaelis]([官网占位]) 构建。

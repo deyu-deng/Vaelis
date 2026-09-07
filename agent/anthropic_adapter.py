@@ -2545,7 +2545,8 @@ def build_anthropic_kwargs(
                 text = text.replace("Vaelis Agent", "Claude Code")
                 text = text.replace("Vaelis agent", "Claude Code")
                 text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
+                # The upstream brand name no longer appears in Vaelis identity
+                # strings, so this replacement is intentionally removed.
                 block["text"] = text
 
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a

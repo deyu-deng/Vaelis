@@ -3505,7 +3505,7 @@ def _build_compact_banner() -> str:
 
     w = min(shutil.get_terminal_size().columns - 2, 88)
     if w < 30:
-        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
+        return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Vaelis[/]\n"
 
     inner = w - 2  # inside the box border
     bar = "═" * w
@@ -6235,7 +6235,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if is_nous_hermes_non_agentic(model_name):
             self._console_print()
             self._console_print(
-                "[bold yellow]⚠  Nous Research Vaelis 3 & 4 models are NOT agentic and are not "
+                "[bold yellow]⚠  Vaelis 3 & 4 chat models are NOT agentic and are not "
                 "designed for use with Vaelis Agent.[/]"
             )
             self._console_print(
@@ -10082,7 +10082,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"  Payment: {card.masked}")
         print(f"  {'─' * 41}")
         _consent = (
-            "By confirming, you allow Nous Research to charge your card."
+            "By confirming, you allow Vaelis to charge your card."
         )
         _cprint(f"  {_d(_consent)}")
 
@@ -10366,7 +10366,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         print()
         _ar_consent = (
-            f"By confirming, you authorize Nous Research to charge {card.masked} "
+            f"By confirming, you authorize Vaelis to charge {card.masked} "
             f"whenever your balance reaches {format_money(threshold_amt)}. "
             f"Turn off any time here or on the portal."
         )
