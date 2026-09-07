@@ -71,7 +71,7 @@ def test_agents_empty_registry_is_ok_envelope(client):
 def test_agents_shape_matches_typescript_contract(client, _isolated_state):
     register(_isolated_state, agenda=AGENDA)
     row = client.get("/api/agents").json()["data"][0]
-    assert set(row) == {"id", "name", "status", "model", "todayCalls", "profile"}
+    assert set(row) == {"id", "name", "status", "model", "todayCalls", "profile", "category"}
     assert row["id"] == "agenda"
     assert row["name"] == "日程秘书"
     assert row["status"] == "idle"  # no L3 children in flight
@@ -145,22 +145,26 @@ def _stub_spawn(registry, monkeypatch):
 def test_post_l2_project_appears_in_list(client, _isolated_state, monkeypatch):
     """Human-created project L2 is saved and then visible on GET /api/agents."""
     calls = _stub_spawn(_isolated_state, monkeypatch)
-    response = client.post("/api/agents", json={"id": "vaelis-code"})
+    response = client.post(
+        "/api/agents", json={"id": "vaelis-code", "category": "projects"}
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["id"] == "vaelis-code"
-    assert set(body["data"]) == {"id", "name", "status", "model", "todayCalls", "profile"}
+    assert body["data"]["category"] == "projects"
+    assert set(body["data"]) == {"id", "name", "status", "model", "todayCalls", "profile", "category"}
     ids = [row["id"] for row in client.get("/api/agents").json()["data"]]
     assert "vaelis-code" in ids
     assert _isolated_state.get("vaelis-code").role == "l2_project"
+    assert _isolated_state.get("vaelis-code").category == "projects"
     assert calls == [("vaelis-code", None)]
 
 
 def test_post_rejects_l1_secretary(client, _isolated_state, monkeypatch):
     calls = _stub_spawn(_isolated_state, monkeypatch)
     response = client.post(
-        "/api/agents", json={"id": "boss", "role": "l1_secretary"}
+        "/api/agents", json={"id": "boss", "role": "l1_secretary", "category": "butler"}
     )
     assert response.status_code == 400
     assert response.json()["ok"] is False
@@ -170,24 +174,48 @@ def test_post_rejects_l1_secretary(client, _isolated_state, monkeypatch):
 
 
 def test_post_missing_id_is_400(client):
-    response = client.post("/api/agents", json={"name": "nope"})
+    response = client.post("/api/agents", json={"name": "nope", "category": "butler"})
     assert response.status_code == 400
     assert response.json()["ok"] is False
     assert "error" in response.json()
 
 
 def test_post_invalid_id_is_400(client):
-    response = client.post("/api/agents", json={"id": "has space"})
+    response = client.post(
+        "/api/agents", json={"id": "has space", "category": "butler"}
+    )
     assert response.status_code == 400
     assert response.json()["ok"] is False
     assert "error" in response.json()
+
+
+def test_post_missing_category_is_400(client, _isolated_state, monkeypatch):
+    """R-012: category is now required — a bare id is rejected."""
+    _stub_spawn(_isolated_state, monkeypatch)
+    response = client.post("/api/agents", json={"id": "no-cat"})
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert "category" in response.json()["error"]
+
+
+def test_post_invalid_category_is_400(client, _isolated_state, monkeypatch):
+    _stub_spawn(_isolated_state, monkeypatch)
+    response = client.post(
+        "/api/agents", json={"id": "bad-cat", "category": "personal"}
+    )
+    assert response.status_code == 400
+    assert response.json()["ok"] is False
+    assert "category" in response.json()["error"]
 
 
 def test_post_existing_agenda_does_not_spawn_second(client, _isolated_state, monkeypatch):
     """S2: an id that is already the agenda L2 is returned as-is, no respawn."""
     register(_isolated_state, agenda=AGENDA)
     calls = _stub_spawn(_isolated_state, monkeypatch)
-    response = client.post("/api/agents", json={"id": "agenda", "role": "l2_agenda"})
+    response = client.post(
+        "/api/agents",
+        json={"id": "agenda", "role": "l2_agenda", "category": "butler"},
+    )
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["data"]["id"] == "agenda"
@@ -198,7 +226,8 @@ def test_post_second_agenda_id_is_409(client, _isolated_state, monkeypatch):
     register(_isolated_state, agenda=AGENDA)
     calls = _stub_spawn(_isolated_state, monkeypatch)
     response = client.post(
-        "/api/agents", json={"id": "agenda-2", "role": "l2_agenda"}
+        "/api/agents",
+        json={"id": "agenda-2", "role": "l2_agenda", "category": "butler"},
     )
     assert response.status_code == 409
     assert response.json()["ok"] is False
@@ -280,7 +309,7 @@ def test_overview_shape(client, _isolated_state):
     register(_isolated_state, agenda=AGENDA)
     body = client.get("/api/agents/agenda/overview").json()
     assert body["ok"] is True
-    assert set(body["data"]) == {"agent", "sessionId", "todayCostUsd", "todayTokens"}
+    assert set(body["data"]) == {"agent", "sessionId", "todayCostUsd", "todayTokens", "projectPath"}
     assert body["data"]["agent"]["id"] == "agenda"
     assert isinstance(body["data"]["sessionId"], str)
     assert body["data"]["todayCostUsd"] == 0

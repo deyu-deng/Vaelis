@@ -61,9 +61,13 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from vaelis.agents.registry import (
+    AGENT_CATEGORIES,
+    DEFAULT_CATEGORY,
+    MAX_LIVE_EVENTS_AGENTS,
     AgentEntry,
     AgentRegistry,
     L1_SECRETARY_ROLE,
+    default_project_path,
     find_agenda_agent,
     is_agenda_entry,
     load_registry,
@@ -272,6 +276,10 @@ def agent_row(entry: AgentEntry) -> dict:
     ``profile`` is the Hermes profile the desktop must switch onto before
     resuming or creating that agent's session (ARCH-RULINGS 裁定 1/3;
     registry ``profile_name`` = ``profile or name``).
+
+    R-012: ``category`` is always present (butler default) so the left rail
+    can group rows. ``project_path`` lives on the overview (S2 right rail),
+    not the row — it is a per-workbench mount, not a sidebar concern.
     """
     totals = totals_for_agent(entry.name)
     row: dict = {
@@ -281,15 +289,31 @@ def agent_row(entry: AgentEntry) -> dict:
         "model": model_for(entry),
         "todayCalls": totals.calls,
         "profile": entry.profile_name,
+        "category": entry.category,
     }
     # Omit None values so the frontend receives absent keys (not JSON null),
     # matching the `model?: string` optional contract in types.ts.
     return {k: v for k, v in row.items() if v is not None}
 
 
-def list_agents(entries: Optional[Iterable[AgentEntry]] = None) -> list[dict]:
-    """``GET /api/agents`` — one row per registered L2, sorted by name."""
-    source = list(entries) if entries is not None else get_registry().entries()
+def list_agents(
+    entries: Optional[Iterable[AgentEntry]] = None,
+    *,
+    include_archived: bool = False,
+) -> list[dict]:
+    """``GET /api/agents`` — one row per registered L2, sorted by name.
+
+    裁定 19: archived rows are hidden by default; ``include_archived=True``
+    surfaces them (a separate, explicitly-requested view).
+    """
+    if entries is not None:
+        source = list(entries)
+    else:
+        source = (
+            get_registry().live_entries()
+            if not include_archived
+            else get_registry().entries()
+        )
     rows = [agent_row(entry) for entry in source if is_l2(entry)]
     rows.sort(key=lambda row: row["id"])
     return rows
@@ -304,6 +328,9 @@ def agent_overview(agent_id: str, *, db_path=None) -> Optional[dict]:
     """``GET /api/agents/:id/overview`` — the S2 status card.
 
     ``None`` means "no such agent"; the route turns that into a 404 envelope.
+
+    R-013: ``projectPath`` is the folder the right-rail file browser mounts.
+    Empty string = no bound folder (butler, or an unset project row).
     """
     entry = get_registry().get(agent_id)
     if entry is None or not is_l2(entry):
@@ -315,6 +342,7 @@ def agent_overview(agent_id: str, *, db_path=None) -> Optional[dict]:
         "sessionId": session_ids[0] if session_ids else "",
         "todayCostUsd": round(totals.cost_usd, 6),
         "todayTokens": totals.tokens,
+        "projectPath": entry.project_path,
     }
 
 
@@ -481,9 +509,15 @@ def _known(agent_id: str) -> bool:
 
 
 @router.get("/agents", name="list_agents")
-async def list_agents_route():
-    """§5 GET /api/agents — L2 rows for the console left rail."""
-    rows = await run_in_threadpool(list_agents)
+async def list_agents_route(request: Request):
+    """§5 GET /api/agents — L2 rows for the console left rail.
+
+    裁定 19: ``?include_archived=1`` surfaces dissolved rows (hidden by default).
+    """
+    include_archived = str(request.query_params.get("include_archived") or "").strip() in (
+        "1", "true", "True",
+    )
+    rows = await run_in_threadpool(list_agents, None, include_archived=include_archived)
     return {"ok": True, "data": rows}
 
 
@@ -497,6 +531,14 @@ def create_agent(body: dict) -> Union[dict, JSONResponse]:
 
     ``role`` defaults to ``l2_project``. ``l1_secretary`` is rejected. A second
     agenda L2 is not spawned: same id returns the existing row, a new id is 409.
+
+    R-012: ``category`` is required (projects/butler/events/research). Legacy
+    callers that omit it get a 400 — the desktop always sends one.
+    R-013: ``project_path`` is optional; when absent the registry seeds it from
+    the category default. The bound folder is created on disk if missing.
+    裁定 19: ``category=events`` requires ``source_event_id`` pointing to a
+    confirmed agenda event, and live events agents are capped at
+    :data:`MAX_LIVE_EVENTS_AGENTS` (5).
     """
     raw_id = body.get("id") if isinstance(body, dict) else None
     if raw_id is None or not str(raw_id).strip():
@@ -504,6 +546,17 @@ def create_agent(body: dict) -> Union[dict, JSONResponse]:
     agent_id = str(raw_id).strip()
     if not _AGENT_ID_RE.fullmatch(agent_id):
         return _error(400, "id must match [a-zA-Z0-9_-]+")
+
+    # R-012: category required + validated.
+    raw_category = body.get("category")
+    if raw_category is None or not str(raw_category).strip():
+        return _error(400, "category is required (projects/butler/events/research)")
+    category = str(raw_category).strip().lower()
+    if category not in AGENT_CATEGORIES:
+        return _error(
+            400,
+            f"category must be one of {list(AGENT_CATEGORIES)}",
+        )
 
     role_raw = body.get("role")
     role = str(role_raw).strip() if role_raw else "l2_project"
@@ -520,16 +573,47 @@ def create_agent(body: dict) -> Union[dict, JSONResponse]:
     if not clone_from:
         clone_from = None
 
+    # R-013: optional override of the category default folder binding.
+    project_path_override = str(body.get("projectPath") or "").strip()
+
     registry = get_registry()
     existing = registry.get(agent_id)
     if existing is not None and is_agenda_entry(existing):
         return {"ok": True, "data": agent_row(existing)}
+
+    # 裁定 19: events lifecycle guards.
+    source_event_id = ""
+    if category == "events":
+        source_event_id = str(body.get("sourceEventId") or "").strip()
+        if not source_event_id:
+            return _error(
+                400,
+                "events agents require sourceEventId (a confirmed agenda event)",
+            )
+        # Validate the referenced event exists and is confirmed.
+        event_ok = _agenda_event_is_confirmed(source_event_id)
+        if not event_ok:
+            return _error(
+                400,
+                f"sourceEventId {source_event_id!r} is not a confirmed agenda event",
+            )
+        # Cap live events agents (an update of an existing events row does not
+        # count toward the cap — only a brand-new one does).
+        if existing is None or existing.category != "events":
+            if registry.count_live_events() >= MAX_LIVE_EVENTS_AGENTS:
+                return _error(
+                    400,
+                    f"at most {MAX_LIVE_EVENTS_AGENTS} live events agents allowed",
+                )
 
     proposed = AgentEntry(
         name=agent_id,
         role=role,
         description=display or blurb,
         mind_subtree=mind_subtree,
+        category=category,
+        project_path=project_path_override,
+        source_event_id=source_event_id,
     )
     creating_agenda = role == _AGENDA_ROLE or is_agenda_entry(proposed)
     if creating_agenda:
@@ -541,6 +625,17 @@ def create_agent(body: dict) -> Union[dict, JSONResponse]:
 
     entry = registry.upsert(proposed)
     registry.save()
+
+    # R-013: ensure the bound folder exists (butler has none → skip).
+    if entry.project_path:
+        try:
+            Path(entry.project_path).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "vaelis console: could not create project_path %s for %s: %s",
+                entry.project_path, entry.name, exc,
+            )
+
     try:
         registry.spawn(entry.name, clone_from=clone_from)
     except Exception as exc:
@@ -550,6 +645,123 @@ def create_agent(body: dict) -> Union[dict, JSONResponse]:
     row = agent_row(entry)
     reload_registry()
     return {"ok": True, "data": row}
+
+
+def _agenda_event_is_confirmed(event_id: str) -> bool:
+    """裁定 19: the sourceEventId must point to a confirmed agenda event.
+
+    Reads through AgendaService.get (read-only). Any failure (missing event,
+    non-confirmed status, agenda DB unreachable) returns False — fail-closed,
+    so a broken agenda state never silently lets an events agent through.
+    """
+    try:
+        from vaelis.agenda import get_service
+
+        event = get_service().get(event_id)
+    except Exception as exc:
+        logger.warning("vaelis console: sourceEventId lookup failed: %s", exc)
+        return False
+    if event is None:
+        return False
+    return getattr(event, "status", "") == "confirmed"
+
+
+def dissolve_agent(agent_id: str) -> Union[dict, JSONResponse]:
+    """裁定 19: POST /api/agents/:id/dissolve — archive, do not delete.
+
+    Moves the profile directory to ``profiles/_archived/<id>-<date>/`` and
+    marks the registry entry ``archived=True``. The row stays on disk (visible
+    only via ``include_archived=1``); a separate, explicitly-confirmed delete
+    is a future operation (frontend owns the second confirm).
+
+    Returns a notification body the frontend can push to DingTalk: the agent
+    id, the archive path, and a human line.
+    """
+    registry = get_registry()
+    entry = registry.get(agent_id)
+    if entry is None:
+        return _error(404, f"agent {agent_id!r} is not registered")
+    if not is_l2(entry):
+        return _error(400, "cannot dissolve the L1 secretary")
+    if entry.archived:
+        # Idempotent: already dissolved. Return the existing archive info.
+        archive_path = _archive_profile_dir(entry, move=False)
+        return {
+            "ok": True,
+            "data": {
+                "id": agent_id,
+                "archived": True,
+                "archivedAt": entry.archived_at,
+                "archivePath": str(archive_path) if archive_path else "",
+                "alreadyArchived": True,
+            },
+        }
+
+    # Mark the registry row first (so a crash mid-move leaves a clear state:
+    # the row says archived even if the dir move is half-done — the dir is
+    # still recoverable from the original location).
+    updated = registry.dissolve(agent_id)
+    registry.save()
+
+    archive_path = _archive_profile_dir(updated, move=True)
+    reload_registry()
+
+    notification = (
+        f"代理 {agent_id} 已解散并归档（category={entry.category}）。"
+        f"归档目录：{archive_path or '(profile 未落地)'}。"
+        "注册表条目保留，可在归档列表查看；彻底删除需二次确认。"
+    )
+    return {
+        "ok": True,
+        "data": {
+            "id": agent_id,
+            "archived": True,
+            "archivedAt": updated.archived_at,
+            "archivePath": str(archive_path) if archive_path else "",
+            "notification": notification,
+        },
+    }
+
+
+def _archive_profile_dir(entry: AgentEntry, *, move: bool) -> Optional[Path]:
+    """Move (or locate) the profile dir under ``profiles/_archived/<id>-<date>``.
+
+    Returns the archive path, or None when the profile was never materialized
+    (no dir to move). ``move=False`` only locates; ``move=True`` performs the
+    rename. A missing source dir is not an error — the row is still marked
+    archived, just with no folder to carry over.
+    """
+    try:
+        from hermes_cli.profiles import get_profile_dir
+    except ImportError:
+        return None
+    try:
+        src = get_profile_dir(entry.profile_name)
+    except (KeyError, Exception):
+        return None
+    if not src.exists():
+        return None
+    from datetime import date
+
+    suffix = entry.archived_at or date.today().isoformat()
+    # Sanitize the id for use as a path component (the id regex already
+    # restricts to [a-zA-Z0-9_-], but be defensive).
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in entry.name)
+    dest = src.parent / "_archived" / f"{safe_id}-{suffix}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        # Idempotent: archive already in place. Only return the path.
+        return dest
+    if not move:
+        return dest  # locate-only: report where it would go
+    try:
+        src.rename(dest)
+    except OSError as exc:
+        logger.warning(
+            "vaelis console: archive move failed for %s: %s", entry.name, exc
+        )
+        return None
+    return dest
 
 
 @router.post("/agents", name="create_agent")
@@ -562,6 +774,12 @@ async def create_agent_route(request: Request):
     if not isinstance(body, dict):
         return _error(400, "id is required")
     return await run_in_threadpool(create_agent, body)
+
+
+@router.post("/agents/{agent_id}/dissolve", name="dissolve_agent")
+async def dissolve_agent_route(agent_id: str):
+    """裁定 19: archive an L2 (profile dir → _archived/, row marked archived)."""
+    return await run_in_threadpool(dissolve_agent, agent_id)
 
 
 @router.get("/agents/{agent_id}/subagents")

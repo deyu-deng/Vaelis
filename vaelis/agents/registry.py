@@ -43,6 +43,49 @@ class RegistryError(ValueError):
     pass
 
 
+# R-012: L2 agent taxonomy. ``butler`` is the default so legacy rows
+# (no category key) fold into the catch-all — no migration required.
+AGENT_CATEGORIES: tuple[str, ...] = ("projects", "butler", "events", "research")
+DEFAULT_CATEGORY = "butler"
+
+# R-013: default folder binding per category. ``butler`` has none (it is the
+# housekeeping agent, not project-scoped). A caller may always override
+# ``project_path`` on the entry; this map only seeds the default.
+# NOTE: drive letters are intentionally NOT hardcoded in tests — the registry
+# resolves these verbatim; tests inject override paths.
+DEFAULT_PROJECT_PATHS: dict[str, str] = {
+    "projects": r"D:\projects",
+    "events": r"D:\Cloud\Events",
+    "research": r"D:\Cloud\Research",
+    "butler": "",
+}
+
+# 裁定 19: events 生命周期护栏。一个 events 类代理必须挂到一条用户已确认的
+# agenda 事项；同时存活 events 类代理上限（超即 400）。
+MAX_LIVE_EVENTS_AGENTS = 5
+
+
+def default_project_path(category: str) -> str:
+    """Default folder binding for a category; ``""`` when none (butler)."""
+    return DEFAULT_PROJECT_PATHS.get(category, "")
+
+
+def _dt_today_iso() -> str:
+    """Local date as ISO-8601 (date only) — used for archive folder suffixes."""
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+def _normalize_category(raw: str | None) -> str:
+    norm = str(raw or "").strip().lower()
+    if norm not in AGENT_CATEGORIES:
+        # Fail-closed: an unknown/missing category folds into the catch-all
+        # (butler), never an invented grade. No auto-grading.
+        return DEFAULT_CATEGORY
+    return norm
+
+
 def default_path() -> Path:
     """注册表文件路径：$HERMES_HOME/vaelis/projects.yaml。"""
     override = os.environ.get("VAELIS_PROJECTS_CONFIG", "").strip()
@@ -72,6 +115,19 @@ class AgentEntry:
     # C5 项目节奏：{"weekly_hours": N}。仅对 role=l2_project 有意义；
     # None = 未配置（规划员不为其排推进块）。
     pace: Optional[dict] = None
+    # R-012: sidebar taxonomy group. ``butler`` default for backward compat.
+    category: str = DEFAULT_CATEGORY
+    # R-013: folder binding. Empty = no bound folder (butler, or unset).
+    # When the caller does not supply one, the registry seeds it from the
+    # category default on create (see ``AgentRegistry.upsert``).
+    project_path: str = ""
+    # 裁定 19 dissolve: archived rows stay on disk but hide from the default
+    # list. ``archived_at`` is the ISO date the profile dir was moved aside.
+    archived: bool = False
+    archived_at: str = ""
+    # events 生命周期：建册时指向一条用户已确认的 agenda 事项 id。
+    # Non-empty only for category=events (validated at the API layer).
+    source_event_id: str = ""
 
     @property
     def profile_name(self) -> str:
@@ -110,6 +166,18 @@ class AgentEntry:
             data["description"] = self.description
         if self.pace:
             data["pace"] = self.pace
+        # R-012/R-013: always write category so roundtrip is faithful; the
+        # default (butler) is explicit so a human reading projects.yaml sees
+        # the grade. project_path only when non-empty (butler has none).
+        data["category"] = self.category
+        if self.project_path:
+            data["project_path"] = self.project_path
+        if self.archived:
+            data["archived"] = True
+            if self.archived_at:
+                data["archived_at"] = self.archived_at
+        if self.source_event_id:
+            data["source_event_id"] = self.source_event_id
         return data
 
     @classmethod
@@ -146,6 +214,11 @@ class AgentEntry:
             skills=tuple(str(s) for s in skills),
             description=str(raw.get("description") or ""),
             pace=pace,
+            category=_normalize_category(raw.get("category")),
+            project_path=str(raw.get("project_path") or ""),
+            archived=bool(raw.get("archived") or False),
+            archived_at=str(raw.get("archived_at") or ""),
+            source_event_id=str(raw.get("source_event_id") or ""),
         )
 
 
@@ -204,17 +277,70 @@ class AgentRegistry:
         return self.agents.get(name)
 
     def upsert(self, entry: AgentEntry) -> AgentEntry:
+        # R-013: when the caller did not supply project_path, seed it from
+        # the category default. butler stays empty (no bound folder). The
+        # actual directory is created at the API layer (console router),
+        # not here — registry stays pure data + no filesystem mutation
+        # beyond its own yaml.
+        if not entry.project_path and entry.category != "butler":
+            from dataclasses import replace
+
+            seeded = default_project_path(entry.category)
+            if seeded:
+                entry = replace(entry, project_path=seeded)
         self.agents[entry.name] = entry
         return entry
 
     def remove(self, name: str) -> bool:
         return self.agents.pop(name, None) is not None
 
+    def dissolve(self, name: str, *, archived_at: str = "") -> AgentEntry:
+        """裁定 19: 归档不删除。
+
+        把注册表条目标记 ``archived=True``（保留，列表默认不显示）。
+        profile 目录的物理搬运由调用方（console router）在标记前后做，
+        因为路径解析依赖 ``hermes_cli.profiles`` —— registry 保持纯数据。
+        返回归档后的 entry；找不到则 ``RegistryError``。
+        """
+        entry = self.get(name)
+        if entry is None:
+            raise RegistryError(f"agent {name!r} is not registered")
+        if entry.archived:
+            return entry  # idempotent: 已归档不再重复
+        from dataclasses import replace
+
+        stamp = archived_at or _dt_today_iso()
+        updated = replace(
+            entry,
+            archived=True,
+            archived_at=stamp,
+        )
+        self.agents[name] = updated
+        return updated
+
     def names(self) -> list[str]:
         return sorted(self.agents)
 
     def entries(self) -> list[AgentEntry]:
         return [self.agents[n] for n in self.names()]
+
+    # ------------------------------------------------------------------ #
+    # R-012 / 裁定 19: taxonomy + lifecycle helpers
+    # ------------------------------------------------------------------ #
+
+    def live_entries(self) -> list[AgentEntry]:
+        """Non-archived rows — the default ``GET /api/agents`` view."""
+        return [e for e in self.entries() if not e.archived]
+
+    def archived_entries(self) -> list[AgentEntry]:
+        """Rows marked archived by ``dissolve`` — visible only on explicit ask."""
+        return [e for e in self.entries() if e.archived]
+
+    def count_live_events(self) -> int:
+        """裁定 19: 存活 events 类代理计数（用于 ≤5 上限护栏）。"""
+        return sum(
+            1 for e in self.live_entries() if e.category == "events"
+        )
 
     # ------------------------------------------------------------------ #
     # 模型路由
