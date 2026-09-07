@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import importlib.util
-import json
+from datetime import datetime
 import logging
 from pathlib import Path
 
@@ -50,6 +50,9 @@ def vault(tmp_path, monkeypatch):
     (root / "Vault" / "projects" / "Vaelis" / "progress.md").write_text(
         "M1 推进中，Wave B 完成。", encoding="utf-8"
     )
+    # mind_sync/MindWriter 走 vaelis.mind.paths.resolve_root（env 优先）——
+    # 必须指到临时 vault，否则会解析到真实仓库的 mind/ 并写进去。
+    monkeypatch.setenv("MIND_ROOT", str(root))
     monkeypatch.setattr(MIND_MOD, "_resolve_root", lambda: root)
     return root
 
@@ -101,3 +104,138 @@ def test_profile_block_is_bounded(tmp_path, monkeypatch):
     block = MIND_MOD._profile_block(root)
     assert len(block) < 3000  # 每段 800 截断，窄切不淹上下文
     assert "…" in block
+
+
+# ── 接缝 2：写——每日日程摘要 → Vault/projects/Vaelis/daily/ ─────────────────
+
+
+@pytest.fixture()
+def agenda_env(tmp_path, monkeypatch):
+    """agenda.db 隔离 + 一条今天的 confirmed 事件（真源在 SQLite）。"""
+    db = tmp_path / "agenda.db"
+    monkeypatch.setenv("VAELIS_AGENDA_DB", str(db))
+    today = datetime.now().date().isoformat()
+    conn = store.connect(db)
+    try:
+        store.create_event(
+            conn,
+            title="组会汇报",
+            start_at=f"{today}T10:00:00",
+            end_at=f"{today}T11:00:00",
+            kind="task",
+            status="confirmed",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
+
+
+def test_sync_turn_publishes_daily_agenda_once(vault, agenda_env, provider):
+    provider.initialize("sess-1")
+
+    provider.sync_turn("今天有什么安排？", "今天 10 点有组会汇报。")
+
+    daily = vault / "Vault" / "projects" / "Vaelis" / "daily"
+    files = list(daily.glob("*.md"))
+    assert len(files) == 1  # 当日一个文件
+    content = files[0].read_text(encoding="utf-8")
+    assert "组会汇报" in content  # 内容与 agenda.db 一致（daily_summary 渲染）
+
+    # 同一天第二轮流不再重写（幂等，不制造 git 噪音）
+    mtime = files[0].stat().st_mtime_ns
+    provider.sync_turn("第二轮流", "好的。")
+    assert files[0].stat().st_mtime_ns == mtime
+
+
+def test_sync_turn_skips_non_primary_context(vault, agenda_env):
+    provider = MIND_MOD.MindProvider()
+    provider.initialize("sess-cron", agent_context="cron")
+    provider.sync_turn("x", "y")
+    assert not (vault / "Vault" / "projects" / "Vaelis" / "daily").exists()
+
+
+def test_sync_turn_write_failure_never_blocks_turn(
+    vault, agenda_env, provider, caplog, monkeypatch
+):
+    """验收 3（故障注入）：写路径炸掉 → 主对话不受阻，仅告警。"""
+    provider.initialize("sess-1")
+
+    import vaelis.agenda.mind_sync as mind_sync_mod
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("mind vault locked")
+
+    monkeypatch.setattr(mind_sync_mod, "publish_project_daily_summary", boom)
+    with caplog.at_level(logging.WARNING, logger=MIND_MOD.__name__):
+        provider.sync_turn("你好", "在的。")  # 不抛异常即通过
+    assert any("daily agenda summary failed" in r.message for r in caplog.records)
+
+
+def test_sync_turn_writer_soft_failure_is_warning_only(
+    vault, agenda_env, provider, caplog, monkeypatch
+):
+    """写服务返回 ok=False（vault 不可用等）→ 同样只告警。"""
+    provider.initialize("sess-1")
+
+    import vaelis.agenda.mind_sync as mind_sync_mod
+    from vaelis.mind.writer import WriteResult
+
+    monkeypatch.setattr(
+        mind_sync_mod,
+        "publish_project_daily_summary",
+        lambda **kw: WriteResult(ok=False, written=[], skipped=["x"], detail="mind unavailable"),
+    )
+    with caplog.at_level(logging.WARNING, logger=MIND_MOD.__name__):
+        provider.sync_turn("你好", "在的。")
+    assert any("not written" in r.message for r in caplog.records)
+
+
+def test_sync_turn_turn_note_failure_still_publishes_agenda(
+    vault, agenda_env, provider, monkeypatch
+):
+    """turn 笔记与日程摘要是两个独立接缝：一个失败不拖死另一个。"""
+    provider.initialize("sess-1")
+
+    import vaelis.mind.writer as writer_mod
+
+    real_write_one = writer_mod.MindWriter.write_one
+    calls = {"n": 0}
+
+    def flaky_write_one(self, rel, content, *, mode="overwrite"):
+        if "chat-logs/exports" in rel:
+            calls["n"] += 1
+            raise RuntimeError("exports dir gone")
+        return real_write_one(self, rel, content, mode=mode)
+
+    monkeypatch.setattr(writer_mod.MindWriter, "write_one", flaky_write_one)
+    provider.sync_turn("你好", "在的。")
+    assert calls["n"] == 1
+    assert (vault / "Vault" / "projects" / "Vaelis" / "daily").is_dir()
+
+
+def test_publish_project_daily_summary_is_safe_and_idempotent(vault, agenda_env, tmp_path):
+    from vaelis.agenda.mind_sync import (
+        project_daily_relative_path,
+        publish_project_daily_summary,
+    )
+    from vaelis.mind.writer import MindWriter
+
+    rel = project_daily_relative_path()
+    assert rel.startswith("Vault/projects/Vaelis/daily/")
+    writer = MindWriter(vault, run_verifier=False, commit=False)
+    first = publish_project_daily_summary(writer=writer)
+    assert first.ok, first.detail
+    second = publish_project_daily_summary(writer=writer)
+    assert second.ok
+    files = list((vault / "Vault" / "projects" / "Vaelis" / "daily").glob("*.md"))
+    assert len(files) == 1  # 覆盖而非累积
+
+
+def test_publish_project_daily_summary_without_vault_is_soft(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIND_ROOT", str(tmp_path / "no-such-vault"))
+    from vaelis.agenda.mind_sync import publish_project_daily_summary
+
+    result = publish_project_daily_summary()
+    assert result.ok is False
+    assert result.detail == "mind unavailable"

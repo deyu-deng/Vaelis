@@ -262,6 +262,35 @@ class MindProvider(MemoryProvider):
 
     # -- persist (per-turn) ----------------------------------------------
 
+    def _maybe_publish_daily_agenda(self) -> None:
+        """WP-MIND 写接缝：每会话每天一次，把当日日程摘要发进 Mind。
+
+        走既有 ``vaelis.agenda.mind_sync`` 通道（MindWriter 串行服务、无模型
+        渲染、目标 ``Vault/projects/Vaelis/daily/<date>.md``）。不新增 API、
+        不并行写。任何失败只降级为日志告警，绝不阻塞主对话流；非 primary
+        上下文（cron/flush）直接跳过，运行时状态真源始终是 SQLite（ADR-0007）。
+        """
+        if self._agent_context != "primary":
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._agenda_published_date == today:
+            return
+        self._agenda_published_date = today  # 当天不再重试，避免失败刷屏/每轮重写
+        try:
+            from vaelis.agenda.mind_sync import publish_project_daily_summary
+
+            result = publish_project_daily_summary()
+            if result.ok:
+                logger.info(
+                    "[mind] daily agenda summary published to Vault/projects/Vaelis"
+                )
+            else:
+                logger.warning(
+                    "[mind] daily agenda summary not written: %s", result.detail
+                )
+        except Exception as exc:  # noqa: BLE001 - persistence is non-fatal
+            logger.warning("[mind] daily agenda summary failed (non-fatal): %s", exc)
+
     def sync_turn(
         self,
         user_content: str,
@@ -274,7 +303,11 @@ class MindProvider(MemoryProvider):
 
         Appends ``<kebab-session>.md`` (one section per turn) via MindWriter.
         Refuses the write unless the resolved path is inside SAFE_PREFIXES.
+
+        同时触发写接缝的每日日程摘要（独立 try 域：turn 笔记失败不拖死它，
+        反之亦然）。
         """
+        self._maybe_publish_daily_agenda()
         try:
             root = _resolve_root()
             if not root.is_dir():
