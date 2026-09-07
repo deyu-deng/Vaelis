@@ -1395,6 +1395,8 @@ export const ja = defineLocale({
     agentsEmptyDesc: 'バックエンドが schedule secretary を登録すると、ここに表示されます。',
     newAgent: 'エージェントを追加',
     newAgentLabel: 'エージェントを追加',
+    newAgentCategoryLabel: 'カテゴリ',
+    createEventAgentHint: 'イベント系エージェントはスケジュールから作成してください（近日公開）。',
     agentCategories: {
       projects: 'プロジェクト',
       butler: 'バトラー',

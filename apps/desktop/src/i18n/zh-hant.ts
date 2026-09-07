@@ -1350,6 +1350,8 @@ export const zhHant = defineLocale({
     agentsEmptyDesc: '後端註冊日程秘書後，就會出現在這裡。',
     newAgent: '新增智慧代理',
     newAgentLabel: '新增智慧代理',
+    newAgentCategoryLabel: '分類',
+    createEventAgentHint: '事件類代理請透過日程建立（後續支援）。',
     agentCategories: {
       projects: '專案',
       butler: '管家',

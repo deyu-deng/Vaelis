@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/dialog'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import {
@@ -33,7 +34,13 @@ import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/he
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
-import { slug } from '@/lib/sanitize'
+import {
+  AGENT_CATEGORY_VALUES,
+  DEFAULT_AGENT_CATEGORY,
+  type AgentCategory,
+  buildCreateAgentBody,
+  isCreateAgentCategoryBlocked
+} from './create-agent'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -145,11 +152,6 @@ const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
 
 const NEW_SESSION_KBD = comboTokens('mod+n')
-
-/** Registry id from the typed name: lowercase + hyphens. Empty (e.g. CJK-only) gets a dirty fallback. */
-function agentIdFromName(name: string): string {
-  return slug(name).replace(/-+$/g, '') || `l2-${Date.now()}`
-}
 
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
@@ -362,6 +364,7 @@ export function ChatSidebar({
   const [createAgentName, setCreateAgentName] = useState('')
   const [createAgentBusy, setCreateAgentBusy] = useState(false)
   const [createAgentError, setCreateAgentError] = useState<null | string>(null)
+  const [createAgentCategory, setCreateAgentCategory] = useState<AgentCategory>(DEFAULT_AGENT_CATEGORY)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
 
@@ -819,6 +822,7 @@ export function ChatSidebar({
     setCreateAgentName('')
     setCreateAgentError(null)
     setCreateAgentBusy(false)
+    setCreateAgentCategory(DEFAULT_AGENT_CATEGORY)
     setCreateAgentOpen(true)
   }, [])
 
@@ -829,23 +833,29 @@ export function ChatSidebar({
       return
     }
 
-    const id = agentIdFromName(trimmed)
+    // Events agents need a schedule-backed source_event_id; the dialog
+    // disables submit for that category, but guard here too.
+    if (isCreateAgentCategoryBlocked(createAgentCategory)) {
+      return
+    }
+
+    const body = buildCreateAgentBody(trimmed, createAgentCategory)
 
     setCreateAgentBusy(true)
     setCreateAgentError(null)
 
     try {
-      await createAgent({ id, role: 'l2_project' })
+      await createAgent(body)
       await refreshConsoleAgents()
       setCreateAgentOpen(false)
       setCreateAgentName('')
-      navigate(agentRoute(id))
+      navigate(agentRoute(body.id))
     } catch (cause) {
       setCreateAgentError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setCreateAgentBusy(false)
     }
-  }, [createAgentBusy, createAgentName, navigate])
+  }, [createAgentBusy, createAgentCategory, createAgentName, navigate])
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1726,12 +1736,38 @@ export function ChatSidebar({
                 value={createAgentName}
               />
             </div>
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium" htmlFor="new-agent-category">
+                {c.newAgentCategoryLabel}
+              </label>
+              <Select
+                onValueChange={value => setCreateAgentCategory(value as AgentCategory)}
+                value={createAgentCategory}
+              >
+                <SelectTrigger aria-label={c.newAgentCategoryLabel} id="new-agent-category">
+                  <SelectValue placeholder={c.newAgentCategoryLabel} />
+                </SelectTrigger>
+                <SelectContent>
+                  {AGENT_CATEGORY_VALUES.map(cat => (
+                    <SelectItem key={cat} value={cat}>
+                      {c.agentCategories[cat] ?? cat}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {isCreateAgentCategoryBlocked(createAgentCategory) && (
+              <p className="text-xs text-destructive">{c.createEventAgentHint}</p>
+            )}
             {createAgentError && <p className="text-xs text-destructive">{createAgentError}</p>}
             <DialogFooter>
               <Button disabled={createAgentBusy} onClick={() => setCreateAgentOpen(false)} type="button" variant="ghost">
                 {t.common.cancel}
               </Button>
-              <Button disabled={createAgentBusy} type="submit">
+              <Button
+                disabled={createAgentBusy || isCreateAgentCategoryBlocked(createAgentCategory)}
+                type="submit"
+              >
                 {c.newAgentLabel}
               </Button>
             </DialogFooter>

@@ -1213,6 +1213,10 @@ export interface Translations {
     agentsEmptyDesc: string
     newAgent: string
     newAgentLabel: string
+    /** WP-CREATE-CAT: label for the category <select> in the new-agent dialog. */
+    newAgentCategoryLabel: string
+    /** WP-CREATE-CAT: hint shown when the `events` category is selected (blocked for now). */
+    createEventAgentHint: string
     chiefSecretary: string
     backToSecretary: string
     /** R-015: the single persistent L1 main-thread session, pinned above the lists. */

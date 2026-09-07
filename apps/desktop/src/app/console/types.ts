@@ -36,6 +36,12 @@ export const AGENT_STATUSES: readonly AgentStatus[] = [
 export interface AgentCreateRequest {
   /** Registry id / default profile name, e.g. `vaelis-code`. */
   id: string
+  /**
+   * Sidebar taxonomy group (R-012): `projects` / `butler` / `events` /
+   * `research`. Forwarded to the agent registry; read-side defaults to
+   * `butler` when absent (see `Agent.category`). Added by WP-CREATE-CAT.
+   */
+  category?: string
   /** Default `l2_project`. Never `l1_secretary`. */
   role?: 'l2_agenda' | 'l2_planner' | 'l2_project'
   name?: string

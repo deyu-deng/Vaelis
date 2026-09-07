@@ -1629,6 +1629,8 @@ export const zh: Translations = {
     agentsEmptyDesc: '后端注册日程秘书后，会出现在这里。',
     newAgent: '新建智能体',
     newAgentLabel: '新建智能体',
+    newAgentCategoryLabel: '分类',
+    createEventAgentHint: '事件类代理请通过日程创建（后续支持）。',
     agentCategories: {
       projects: '项目',
       butler: '管家',

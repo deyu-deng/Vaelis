@@ -1458,6 +1458,8 @@ export const en: Translations = {
     agentsEmptyDesc: 'The schedule secretary appears here once the backend registers one.',
     newAgent: 'New agent',
     newAgentLabel: 'New agent',
+    newAgentCategoryLabel: 'Category',
+    createEventAgentHint: 'Event agents must be created from the schedule (coming later).',
     chiefSecretary: 'Chief secretary',
     backToSecretary: 'Back to chief secretary',
     mainlineSession: 'Main thread',
