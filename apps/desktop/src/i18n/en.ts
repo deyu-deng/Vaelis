@@ -1445,6 +1445,12 @@ export const en: Translations = {
     }
   },
   console: {
+    agentCategories: {
+      projects: 'Projects',
+      butler: 'Butler',
+      events: 'Events',
+      research: 'Research'
+    },
     agentsTitle: 'Agents',
     agentsLoading: 'Loading agents',
     agentsLoadFailed: 'Could not load agents',
@@ -1454,6 +1460,8 @@ export const en: Translations = {
     newAgentLabel: 'New agent',
     chiefSecretary: 'Chief secretary',
     backToSecretary: 'Back to chief secretary',
+    mainlineSession: 'Main thread',
+    bypassSessions: 'Other sessions',
     collapseRail: 'Collapse the agent rail',
     expandRail: 'Expand the agent rail',
     agentStatuses: {

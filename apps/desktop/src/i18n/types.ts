@@ -1204,6 +1204,8 @@ export interface Translations {
     }
   }
   console: {
+    /** R-012 sidebar agent taxonomy (PROJECTS / BUTLER / EVENTS / RESEARCH). */
+    agentCategories: Record<string, string>
     agentsTitle: string
     agentsLoading: string
     agentsLoadFailed: string
@@ -1213,6 +1215,10 @@ export interface Translations {
     newAgentLabel: string
     chiefSecretary: string
     backToSecretary: string
+    /** R-015: the single persistent L1 main-thread session, pinned above the lists. */
+    mainlineSession: string
+    /** R-015: drawer for manually-created bypass (non-mainline) L1 sessions. */
+    bypassSessions: string
     collapseRail: string
     expandRail: string
     agentStatuses: Record<string, string>

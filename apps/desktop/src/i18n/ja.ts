@@ -1395,8 +1395,16 @@ export const ja = defineLocale({
     agentsEmptyDesc: 'バックエンドが schedule secretary を登録すると、ここに表示されます。',
     newAgent: 'エージェントを追加',
     newAgentLabel: 'エージェントを追加',
+    agentCategories: {
+      projects: 'プロジェクト',
+      butler: 'バトラー',
+      events: 'イベント',
+      research: 'リサーチ'
+    },
     chiefSecretary: '総秘書',
     backToSecretary: '総秘書に戻る',
+    mainlineSession: 'メインスレッド',
+    bypassSessions: 'その他のセッション',
     collapseRail: 'エージェント欄を折りたたむ',
     expandRail: 'エージェント欄を展開する',
     agentStatuses: {

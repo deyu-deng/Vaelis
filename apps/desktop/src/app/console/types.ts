@@ -59,6 +59,12 @@ export interface DailyPlanL1View {
 
 /** §5 GET /api/agents — one row per L2 worker. */
 export interface Agent {
+  /**
+   * Sidebar taxonomy group (R-012): `projects` / `butler` / `events` /
+   * `research`. Served by the backend agent registry; legacy rows without the
+   * field fold into `butler` on the client.
+   */
+  category?: string
   id: string
   /** Qualified model id, e.g. `deepseek/deepseek-chat` (ADR-0011 routing). Absent when the role has no route. */
   model?: string

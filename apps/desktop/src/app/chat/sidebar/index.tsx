@@ -108,11 +108,12 @@ import {
 
 import { createAgent } from '../../console/api'
 import { $consoleAgents, $consoleAgentsLoading, refreshConsoleAgents } from '../../console/store/agents'
-import type { AgentStatus } from '../../console/types'
-import { secretaryShellLabel, secretaryShortName } from '../../desktop-controller-utils'
+import { secretaryShellLabel } from '../../desktop-controller-utils'
 import { agentRoute, type AppView, ARTIFACTS_ROUTE, HOME_ROUTE, MESSAGING_ROUTE, type ShellLevel, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
+import { AgentCategoryGroup } from './agent-category-group'
+import { agentProfileIdSet, groupAgentsByCategory, isL1SessionProfile, normalizeAgentCategory } from './agent-groups'
 import { countLabel } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -166,16 +167,6 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
-
-// L2 secretary status dots — the same vocabulary the S1 agent list used, so the
-// secretary section reads as one system with the session rows. `AgentStatus` is
-// the frozen §5 state machine (`console/types.ts`).
-const AGENT_STATUS_DOT: Record<AgentStatus, string> = {
-  awaiting_approval: 'bg-amber-500',
-  error: 'bg-destructive',
-  idle: 'bg-muted-foreground/40',
-  working: 'bg-emerald-500'
-}
 
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
@@ -1017,6 +1008,45 @@ export function ChatSidebar({
   // parallel grouped view, not a filter on this one — nothing is hidden here.
   const displayAgentSessions = agentSessions
 
+  // R-012: bucket agents into the four sidebar categories (missing/unknown
+  // category folds into butler) and index agent-owned sessions by profile so
+  // each agent row can reveal its own thread list inline.
+  const agentCategoryGroups = useMemo(() => groupAgentsByCategory(secretaryAgents), [secretaryAgents])
+  const agentProfileSet = useMemo(() => agentProfileIdSet(secretaryAgents), [secretaryAgents])
+
+  const sessionsByAgentProfile = useMemo(() => {
+    const map = new Map<string, SessionInfo[]>()
+
+    for (const session of displayAgentSessions) {
+      const profile = (session.profile ?? '').trim()
+
+      if (!profile || !agentProfileSet.has(profile) || isL1SessionProfile(profile)) {
+        continue
+      }
+
+      const bucket = map.get(profile)
+
+      if (bucket) {
+        bucket.push(session)
+      } else {
+        map.set(profile, [session])
+      }
+    }
+
+    return map
+  }, [agentProfileSet, displayAgentSessions])
+
+  // R-012: the active agent's category badge for the /agent/:id shell label.
+  const l2CategoryLabel = useMemo(() => {
+    if (!l2Id) {
+      return ''
+    }
+
+    const agent = secretaryAgents.find(row => row.id === l2Id)
+
+    return agent ? (c.agentCategories[normalizeAgentCategory(agent.category)] ?? '') : ''
+  }, [c.agentCategories, l2Id, secretaryAgents])
+
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
   // loaded rows against that profile's total — otherwise a huge default profile
@@ -1168,8 +1198,14 @@ export function ChatSidebar({
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {level && contentVisible && (
-                <div className="pb-1.5 pt-0.5">
+                <div className="flex items-center gap-2 pb-1.5 pt-0.5">
                   <SidebarPanelLabel>{secretaryShellLabel(level, c.chiefSecretary, secretaryAgents)}</SidebarPanelLabel>
+                  {/* R-012: category badge for the active agent's workbench. */}
+                  {l2CategoryLabel && (
+                    <span className="shrink-0 rounded border border-(--ui-stroke-tertiary) px-1.5 py-0.5 text-[0.6rem] font-medium leading-none text-(--ui-text-tertiary)">
+                      {l2CategoryLabel}
+                    </span>
+                  )}
                 </div>
               )}
               {l1 && (
@@ -1260,23 +1296,22 @@ export function ChatSidebar({
                 </div>
               ) : (
                 <SidebarMenu className="gap-px">
-                  {secretaryAgents.map(agent => (
-                    <SidebarMenuItem key={agent.id}>
-                      <SidebarMenuButton
-                        className={cn(NAV_BUTTON, l2Id === agent.id && NAV_BUTTON_ACTIVE)}
-                        onClick={() => navigate(agentRoute(agent.id))}
-                        tooltip={secretaryShortName(agent.id, agent.name)}
-                        type="button"
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={cn('size-2 shrink-0 rounded-full', AGENT_STATUS_DOT[agent.status])}
-                        />
-                        {contentVisible && (
-                          <span className="min-w-0 flex-1 truncate">{secretaryShortName(agent.id, agent.name)}</span>
-                        )}
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
+                  {agentCategoryGroups.map(group => (
+                    <AgentCategoryGroup
+                      activeAgentId={l2Id}
+                      activeSessionId={activeSidebarSessionId}
+                      agents={group.agents}
+                      category={group.category}
+                      key={group.category}
+                      label={c.agentCategories[group.category] ?? group.category}
+                      onArchiveSession={onArchiveSession}
+                      onDeleteSession={onDeleteSession}
+                      onNavigateAgent={id => navigate(agentRoute(id))}
+                      onResumeSession={onResumeSession}
+                      onTogglePin={session => pinSession(sessionPinId(session))}
+                      sessionsByProfile={sessionsByAgentProfile}
+                      workingSessionIdSet={workingSessionIdSet}
+                    />
                   ))}
                 </SidebarMenu>
               )}

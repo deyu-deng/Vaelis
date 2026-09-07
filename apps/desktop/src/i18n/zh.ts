@@ -1629,8 +1629,16 @@ export const zh: Translations = {
     agentsEmptyDesc: '后端注册日程秘书后，会出现在这里。',
     newAgent: '新建智能体',
     newAgentLabel: '新建智能体',
+    agentCategories: {
+      projects: '项目',
+      butler: '管家',
+      events: '事件',
+      research: '研究'
+    },
     chiefSecretary: '总秘书',
     backToSecretary: '返回总秘书',
+    mainlineSession: '主线',
+    bypassSessions: '旁路会话',
     collapseRail: '收起智能体栏',
     expandRail: '展开智能体栏',
     agentStatuses: {
