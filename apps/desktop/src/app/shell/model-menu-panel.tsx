@@ -26,6 +26,7 @@ import {
 } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { desktopQuotaProviders, isDesktopQuotaProvider } from '@/store/desktop-quotas'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
   $visibleModels,
@@ -43,10 +44,10 @@ import {
   $currentProvider,
   $currentReasoningEffort
 } from '@/store/session'
-import { desktopQuotaProviders, isDesktopQuotaProvider } from '@/store/desktop-quotas'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { humanizeProviders } from './model-provider-label'
 
 // Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
 // clicking a model row commits + closes, while the hover-revealed edit submenu
@@ -95,6 +96,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   // picked desktop-quota model) must not win the "current" highlight. When the
   // active provider is one of these, the sticky local selection is authoritative.
   const isDesktopQuota = isDesktopQuotaProvider(currentProvider)
+
   const { model: optionsModel, provider: optionsProvider } = isDesktopQuota
     ? { model: currentModel, provider: currentProvider }
     : currentPickerSelection(
@@ -111,7 +113,13 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       : String(modelOptions.error)
     : null
 
-  const providers = [...(modelOptions.data?.providers ?? []), ...desktopQuotaProviders()]
+  // R-017: display-only humanization — mock fixtures are filtered, internal
+  // group vocabulary (AIGW / CUSTOM ENDPOINT) becomes software/vendor names.
+  // Slugs survive untouched so switching/presets keep their identity.
+  const providers = humanizeProviders([
+    ...(modelOptions.data?.providers ?? []),
+    ...desktopQuotaProviders()
+  ])
 
   // The catalog carries MoA presets as a virtual `moa` provider row. Render
   // them in their dedicated section below and keep the row out of the main
