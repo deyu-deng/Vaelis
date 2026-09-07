@@ -1020,7 +1020,7 @@ export function ChatSidebar({
     for (const session of displayAgentSessions) {
       const profile = (session.profile ?? '').trim()
 
-      if (!profile || !agentProfileSet.has(profile) || isL1SessionProfile(profile)) {
+      if (!profile || !agentProfileSet.has(profile) || isL1SessionProfile(profile, agentProfileSet)) {
         continue
       }
 
@@ -1066,9 +1066,9 @@ export function ChatSidebar({
   const bypassSessions = useMemo(
     () =>
       displayAgentSessions.filter(
-        session => isL1SessionProfile(session.profile) && session.id !== mainlineId && !pinnedRealIdSet.has(session.id)
+        session => isL1SessionProfile(session.profile, agentProfileSet) && session.id !== mainlineId && !pinnedRealIdSet.has(session.id)
       ),
-    [displayAgentSessions, mainlineId, pinnedRealIdSet]
+    [agentProfileSet, displayAgentSessions, mainlineId, pinnedRealIdSet]
   )
 
   // Main recents list drops agent-owned threads (they nest under their agent)
@@ -1078,7 +1078,7 @@ export function ChatSidebar({
       displayAgentSessions.filter(session => {
         const profile = (session.profile ?? '').trim()
 
-        if (isL1SessionProfile(profile)) {
+        if (isL1SessionProfile(profile, agentProfileSet)) {
           return false
         }
 

@@ -72,10 +72,24 @@ describe('agentProfileIdSet / isL1SessionProfile', () => {
     ).toEqual(new Set(['simulation']))
   })
 
-  it('treats default/master as L1 identity profiles, others as agent-owned', () => {
+  it('treats default/master/blank as L1 main thread (IPC sends empty profile)', () => {
     expect(isL1SessionProfile('default')).toBe(true)
     expect(isL1SessionProfile('master')).toBe(true)
     expect(isL1SessionProfile(undefined)).toBe(true)
-    expect(isL1SessionProfile('simulation')).toBe(false)
+    expect(isL1SessionProfile('')).toBe(true)
+    // No agent profile set → unknown profiles conservatively stay L1.
+    expect(isL1SessionProfile('simulation')).toBe(true)
+  })
+
+  it('excludes a session only when its profile is a known agent profile', () => {
+    const agentProfiles = new Set(['simulation', 'l2-agenda'])
+
+    expect(isL1SessionProfile('', agentProfiles)).toBe(true)
+    expect(isL1SessionProfile('default', agentProfiles)).toBe(true)
+    expect(isL1SessionProfile('master', agentProfiles)).toBe(true)
+    expect(isL1SessionProfile('simulation', agentProfiles)).toBe(false)
+    expect(isL1SessionProfile('l2-agenda', agentProfiles)).toBe(false)
+    // Unknown profile still L1 even with a set present.
+    expect(isL1SessionProfile('ghost', agentProfiles)).toBe(true)
   })
 })

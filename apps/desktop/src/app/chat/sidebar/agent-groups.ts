@@ -64,9 +64,32 @@ export function agentProfileIdSet(agents: readonly Agent[]): Set<string> {
   return out
 }
 
-/** L1 identity profiles — never treated as agent-owned (they are the user's own main thread). */
-export const L1_SESSION_PROFILES: ReadonlySet<string> = new Set(['default', 'master'])
+// The desktop controller injects SessionInfo over IPC, and that layer always
+// sends an empty `profile` string — so we can't trust the field's truthfulness.
+// L1 identity is therefore "default OR master OR blank OR any profile that is
+// NOT one of the known agent profiles". An agent's own thread is only excluded
+// when it actually carries that agent's profile (which the backend populates,
+// not the session-profile IPC fallback).
+export function isL1SessionProfile(profile?: null | string, agentProfileSet?: ReadonlySet<string>): boolean {
+  const normalized = (profile ?? '').trim().toLowerCase() || 'default'
 
-export function isL1SessionProfile(profile?: null | string): boolean {
-  return L1_SESSION_PROFILES.has((profile ?? 'default').trim().toLowerCase() || 'default')
+  if (normalized === 'master') {
+    return true
+  }
+
+  if (normalized === 'default') {
+    return true
+  }
+
+  // Empty profile (the common IPC case) is the user's own main thread, not an agent.
+  if (!profile || normalized === '') {
+    return true
+  }
+
+  if (agentProfileSet?.has(normalized)) {
+    return false
+  }
+
+  // Unknown profile: conservative — keep it out of agent nesting as L1.
+  return true
 }
