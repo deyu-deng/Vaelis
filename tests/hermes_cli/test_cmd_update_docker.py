@@ -7,11 +7,11 @@ Please reinstall: curl ... install.sh"`` — that script installs a *new*
 host-side Vaelis, not an update to the running container, so the message
 was actively misleading.
 
-These tests pin the new behaviour: when ``detect_install_method`` reports
-``"docker"`` (stamped by ``docker/stage2-hook.sh``), both the apply path
-(``cmd_update``) and the check path (``_cmd_update_check``) print the
-``docker pull`` guidance from ``format_docker_update_message`` and exit
-with status 1, without running ``git fetch`` / ``subprocess.run``.
+Update: ``cmd_update`` (the apply path) is now a frozen no-op in local dev
+builds — it prints the self-update disable notice and returns 0 regardless
+of install method, so the Docker guidance is no longer reachable through it.
+The check path (``_cmd_update_check``) keeps its Docker-aware behaviour and
+is covered directly below.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _cmd_update_check, cmd_update
+from hermes_cli.main import _SELF_UPDATE_DISABLED_MSG, _cmd_update_check, cmd_update
 
 
 # ---------- cmd_update (apply path) ----------
@@ -30,21 +30,19 @@ from hermes_cli.main import _cmd_update_check, cmd_update
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="docker")
 @patch("subprocess.run")
-def test_cmd_update_in_docker_prints_guidance_and_exits(
+def test_cmd_update_is_disabled_even_in_docker(
     mock_run, _mock_method, _mock_managed, capsys
 ):
-    """``hermes update`` inside Docker → friendly message + exit 1, no git calls."""
-    with pytest.raises(SystemExit) as excinfo:
-        cmd_update(SimpleNamespace(check=False))
+    """``hermes update`` is a frozen no-op — even in Docker: notice + exit 0, no git calls."""
+    rc = cmd_update(SimpleNamespace(check=False))
 
-    assert excinfo.value.code == 1
+    assert rc == 0
     out = capsys.readouterr().out
-    # Spot-check the key guidance — exhaustive wording is locked in by the
-    # config-module test below to keep these CLI tests resilient to copy edits.
-    assert "doesn't apply inside the Docker container" in out
-    assert "docker pull nousresearch/hermes-agent:latest" in out
+    assert _SELF_UPDATE_DISABLED_MSG in out
+    # The Docker guidance is no longer reachable through the disabled stub.
+    assert "doesn't apply inside the Docker container" not in out
 
-    # No git invocations — the early-return must beat every git command.
+    # No git invocations at all.
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
     assert git_calls == [], f"expected no git calls, got: {git_calls}"
 
@@ -52,17 +50,16 @@ def test_cmd_update_in_docker_prints_guidance_and_exits(
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="docker")
 @patch("subprocess.run")
-def test_cmd_update_check_in_docker_prints_guidance_and_exits(
+def test_cmd_update_check_flag_is_disabled_even_in_docker(
     mock_run, _mock_method, _mock_managed, capsys
 ):
-    """``hermes update --check`` inside Docker → same message + exit 1, no fetch."""
-    with pytest.raises(SystemExit) as excinfo:
-        cmd_update(SimpleNamespace(check=True, branch=None))
+    """``hermes update --check`` is also a frozen no-op: notice + exit 0, no fetch."""
+    rc = cmd_update(SimpleNamespace(check=True, branch=None))
 
-    assert excinfo.value.code == 1
+    assert rc == 0
     out = capsys.readouterr().out
-    assert "doesn't apply inside the Docker container" in out
-    assert "docker pull nousresearch/hermes-agent:latest" in out
+    assert _SELF_UPDATE_DISABLED_MSG in out
+    assert "doesn't apply inside the Docker container" not in out
 
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
     assert git_calls == [], f"expected no git calls, got: {git_calls}"
@@ -71,19 +68,14 @@ def test_cmd_update_check_in_docker_prints_guidance_and_exits(
 @patch("hermes_cli.config.is_managed", return_value=False)
 @patch("hermes_cli.config.detect_install_method", return_value="docker")
 @patch("subprocess.run")
-def test_cmd_update_in_docker_ignores_yes_and_force(
+def test_cmd_update_yes_and_force_are_ignored_by_disabled_stub(
     mock_run, _mock_method, _mock_managed, capsys
 ):
-    """``--yes`` / ``--force`` don't bypass the Docker bail-out.
+    """``--yes`` / ``--force`` can't re-enable self-update: notice + exit 0, no git."""
+    rc = cmd_update(SimpleNamespace(check=False, yes=True, force=True))
 
-    The point of the bail-out is "git pull will never work here", so even
-    a user trying to barge through with ``--yes --force`` should see the
-    docker-pull guidance.
-    """
-    with pytest.raises(SystemExit):
-        cmd_update(SimpleNamespace(check=False, yes=True, force=True))
-
-    assert "docker pull" in capsys.readouterr().out
+    assert rc == 0
+    assert _SELF_UPDATE_DISABLED_MSG in capsys.readouterr().out
     git_calls = [c for c in mock_run.call_args_list if c.args and c.args[0] and "git" in str(c.args[0][0])]
     assert git_calls == []
 

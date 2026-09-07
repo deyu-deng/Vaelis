@@ -2148,17 +2148,13 @@ def _launch_tui(
             except Exception:
                 pass
 
-    # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
-    # the user sees update output directly and gets the new version.
-    # preserve_inherited=False ensures --tui and other flags are NOT carried
-    # into the update subcommand.
+    # Exit code 42 = TUI requested an update. Self-update is disabled in this
+    # local development build, so instead of relaunching ``hermes update`` we
+    # print the same disable notice and fall through to the normal exit.
     if code == 42:
-        from hermes_cli.relaunch import relaunch
-
         print()
-        print("⚕ Launching update...")
+        print(_SELF_UPDATE_DISABLED_MSG)
         print()
-        relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)
 
@@ -6777,7 +6773,14 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     """Attempt to push updated main to origin (sync fork).
 
     Returns True if push succeeded, False otherwise.
+
+    FROZEN in local dev builds: runtime git push is a self-update-adjacent
+    mutation and is disabled (see ``_SELF_UPDATE_DISABLED_MSG``). This
+    function is currently unreachable (only called from the disabled update
+    machinery); the guard is belt-and-suspenders against future callers.
     """
+    print(_SELF_UPDATE_DISABLED_MSG)
+    return False
     try:
         result = subprocess.run(
             git_cmd + ["push", "origin", "main", "--force-with-lease"],
@@ -6798,7 +6801,15 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     - Compare origin/main with upstream/main
     - If origin/main is strictly behind upstream/main, pull from upstream
     - Try to sync fork back to origin if possible
+
+    FROZEN in local dev builds: runtime ``git fetch``/``git pull`` are
+    self-update-adjacent mutations and are disabled (see
+    ``_SELF_UPDATE_DISABLED_MSG``). This function is currently unreachable
+    (only called from the disabled update machinery); the guard is
+    belt-and-suspenders against future callers.
     """
+    print(_SELF_UPDATE_DISABLED_MSG)
+    return
     has_upstream = _has_upstream_remote(git_cmd, cwd)
 
     if not has_upstream:
@@ -9291,65 +9302,25 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+# Self-update is intentionally frozen in this local development build. Two
+# past incidents (2026-09-06/07) destroyed the working tree through the git
+# self-update path, so ``hermes update`` and every other runtime git-mutating
+# path are disabled. Code sync is performed manually by the responsible Agent.
+_SELF_UPDATE_DISABLED_MSG = (
+    "Vaelis 本地开发版：git 自更新已禁用（历史事故防护）。代码同步由负责 Agent 手动进行。"
+)
+
+
 def cmd_update(args):
-    """Update Vaelis Agent to the latest version.
+    """Update Vaelis Agent to the latest version — DISABLED in local dev builds.
 
-    Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
-    runs the update, then restores stdio on the way out (even on
-    ``sys.exit`` or unhandled exceptions).
+    ``update`` stays registered as a subcommand (other code references the
+    command name), but the body is a no-op that prints the disable notice and
+    returns 0. Git self-update is frozen as historical incident protection;
+    code sync is performed manually by the responsible Agent.
     """
-    from hermes_cli.config import (
-        detect_install_method,
-        format_docker_update_message,
-        format_unsupported_install_warning,
-        is_managed,
-        is_unsupported_install_method,
-        managed_error,
-    )
-
-    # Deprecation notice for pip/Homebrew installs — printed before the
-    # managed-mode early-return below so Homebrew users (who are blocked from
-    # applying the update here) still see it. Warn, don't block: the update
-    # itself still proceeds (except Homebrew, which is managed-mode blocked
-    # for an unrelated reason — brew owns its own upgrade path).
-    _install_method_for_warning = detect_install_method(PROJECT_ROOT)
-    if is_unsupported_install_method(_install_method_for_warning):
-        print(f"⚠ {format_unsupported_install_warning(_install_method_for_warning)}")
-
-    if is_managed():
-        managed_error("update Vaelis Agent")
-        return
-
-    # Docker users can't ``git pull`` — the image excludes ``.git`` from
-    # the build context.  Bail with a friendly explanation pointing at
-    # ``docker pull`` BEFORE any of the apply-path / check-path branches
-    # below get a chance to error out with misleading "Not a git
-    # repository" text.  See format_docker_update_message() for the full
-    # rationale and tag-pinning / config-persistence notes.
-    if detect_install_method(PROJECT_ROOT) == "docker":
-        print(format_docker_update_message())
-        sys.exit(1)
-
-    if getattr(args, "check", False):
-        # --check honors --branch so the "any new commits?" answer matches
-        # what a subsequent `hermes update --branch=<x>` would actually pull.
-        branch = _resolve_update_branch(args)
-        _cmd_update_check(
-            branch=branch,
-            branch_explicit=bool(getattr(args, "branch", None)),
-        )
-        return
-
-    gateway_mode = getattr(args, "gateway", False)
-
-    # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
-    # writes to a closed stdout.  No-op in gateway mode.  See
-    # _install_hangup_protection for rationale.
-    _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
-    try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
-    finally:
-        _finalize_update_output(_update_io_state)
+    print(_SELF_UPDATE_DISABLED_MSG)
+    return 0
 
 
 def _cmd_update_pip(args):

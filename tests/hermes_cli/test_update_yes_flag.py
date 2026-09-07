@@ -12,7 +12,7 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.main import cmd_update
+from hermes_cli.main import _cmd_update_impl, cmd_update
 
 
 def _make_run_side_effect(
@@ -74,7 +74,7 @@ class TestUpdateYesConfigMigration:
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
-            cmd_update(args)
+            _cmd_update_impl(args, gateway_mode=False)
             # Never prompted the user.
             mock_input.assert_not_called()
 
@@ -125,7 +125,7 @@ class TestUpdateYesConfigMigration:
         with patch("builtins.input", return_value="n") as mock_input, patch.object(
             _sys.stdin, "isatty", return_value=True
         ), patch.object(_sys.stdout, "isatty", return_value=True):
-            cmd_update(args)
+            _cmd_update_impl(args, gateway_mode=False)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]

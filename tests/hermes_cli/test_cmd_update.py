@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import _cmd_update_check, _cmd_update_impl, cmd_update, PROJECT_ROOT
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -168,7 +168,7 @@ class TestCmdUpdateBranchFallback:
             branch="fix/stoicneko", verify_ok=False, commit_count="3"
         )
 
-        cmd_update(mock_args)
+        _cmd_update_impl(mock_args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -192,7 +192,7 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="2"
         )
 
-        cmd_update(mock_args)
+        _cmd_update_impl(mock_args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -213,7 +213,7 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        cmd_update(mock_args)
+        _cmd_update_impl(mock_args, gateway_mode=False)
 
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
@@ -244,7 +244,7 @@ class TestCmdUpdateBranchFallback:
             "_get_origin_url",
             return_value="https://github.com/example/hermes-agent.git",
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
         sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
         captured = capsys.readouterr()
@@ -268,7 +268,7 @@ class TestCmdUpdateBranchFallback:
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
         npm_calls = [
             (call.args[0], call.kwargs.get("cwd"))
@@ -367,7 +367,7 @@ class TestCmdUpdateBranchFallback:
                 branch="main", verify_ok=True, commit_count="1"
             )
 
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
             mock_input.assert_not_called()
             from hermes_cli.config import migrate_config
@@ -408,7 +408,7 @@ class TestCmdUpdateMigrationPrompt:
                 branch="main", verify_ok=True, commit_count="1"
             )
 
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
             mock_input.assert_not_called()
             mock_migrate.assert_called_once_with(interactive=False, quiet=True)
@@ -446,7 +446,7 @@ class TestCmdUpdateMigrationPrompt:
                 branch="main", verify_ok=True, commit_count="1"
             )
 
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
             out = capsys.readouterr().out
             # Names, not just counts.
@@ -491,7 +491,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
         ):
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
         assert active_p.path in synced_paths, (
             f"Active profile 'bit' must be included in skill sync; got: {synced_paths}"
@@ -525,7 +525,7 @@ class TestCmdUpdateProfileSkillSync:
             patch("hermes_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
         ):
-            cmd_update(mock_args)
+            _cmd_update_impl(mock_args, gateway_mode=False)
 
         assert default_p.path in synced_paths
 
@@ -581,7 +581,7 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        _cmd_update_impl(args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -603,7 +603,7 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch=None)
 
-        cmd_update(args)
+        _cmd_update_impl(args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         rev_list_cmds = [c for c in commands if "rev-list" in c]
@@ -618,7 +618,7 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        _cmd_update_impl(args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # First checkout call should switch us to bb/gui (not -B; happy-path branch exists locally)
@@ -642,7 +642,7 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        _cmd_update_impl(args, gateway_mode=False)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # Should have BOTH a failed `checkout bb/gui` AND a successful `checkout -B bb/gui origin/bb/gui`
@@ -665,7 +665,7 @@ class TestCmdUpdateBranchFlag:
         args = SimpleNamespace(branch="nonexistent")
 
         with pytest.raises(SystemExit) as exc_info:
-            cmd_update(args)
+            _cmd_update_impl(args, gateway_mode=False)
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
@@ -736,7 +736,7 @@ class TestCmdUpdateCheckBranchFlag:
         )
         args = SimpleNamespace(check=True, branch="bb/gui")
 
-        cmd_update(args)
+        _cmd_update_check(branch="bb/gui", branch_explicit=True)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # Non-main branch skips upstream probe entirely.
@@ -764,7 +764,7 @@ class TestCmdUpdateCheckBranchFlag:
         args = SimpleNamespace(check=True, branch="ghost")
 
         with pytest.raises(SystemExit) as exc_info:
-            cmd_update(args)
+            _cmd_update_check(branch="ghost", branch_explicit=True)
         assert exc_info.value.code == 1
 
         out = capsys.readouterr().out
@@ -790,7 +790,7 @@ class TestCmdUpdateCheckBranchFlag:
         )
         args = SimpleNamespace(check=True, branch=None)
 
-        cmd_update(args)
+        _cmd_update_check()
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
         # Should have tried upstream first.
@@ -808,7 +808,7 @@ class TestCmdUpdateCheckBranchFlag:
         """PyPI install + --branch=<non-main> surfaces a warning instead of silent drop."""
         args = SimpleNamespace(check=True, branch="bb/gui")
 
-        cmd_update(args)
+        _cmd_update_check(branch="bb/gui", branch_explicit=True)
 
         out = capsys.readouterr().out
         assert "--branch is ignored for PyPI installs" in out
@@ -872,3 +872,30 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestCmdUpdateDisabled:
+    """``hermes update`` is a frozen no-op in local dev builds.
+
+    The subcommand stays registered (other code references the "update"
+    command name), but the body only prints the disable notice and returns 0
+    without touching git or subprocesses.
+    """
+
+    @patch("subprocess.run")
+    def test_cmd_update_prints_disable_notice_and_returns_0(self, mock_run, capsys):
+        """Self-update is disabled: notice printed, exit code 0, no git calls."""
+        rc = cmd_update(SimpleNamespace())
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "自更新已禁用" in out
+        assert "代码同步由负责 Agent 手动进行" in out
+        assert mock_run.call_count == 0
+
+    @patch("subprocess.run")
+    def test_cmd_update_check_flag_is_ignored(self, mock_run, capsys):
+        """--check/--branch flags are ignored by the disabled stub."""
+        rc = cmd_update(SimpleNamespace(check=True, branch="bb/gui"))
+        assert rc == 0
+        assert "自更新已禁用" in capsys.readouterr().out
+        assert mock_run.call_count == 0

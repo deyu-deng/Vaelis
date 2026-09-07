@@ -633,8 +633,22 @@ def cmd_install(
     console.print()
 
 
+# Runtime git pulls are frozen in this local development build (same policy
+# as ``hermes update`` — historical incident protection). Code sync is
+# performed manually by the responsible Agent.
+_SELF_UPDATE_DISABLED_MSG = (
+    "Vaelis 本地开发版：git 自更新已禁用（历史事故防护）。代码同步由负责 Agent 手动进行。"
+)
+
+
 def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
+    """Update an installed plugin by pulling latest from its git remote.
+
+    DISABLED in local dev builds: runtime ``git pull`` into plugin dirs is
+    frozen (see ``_SELF_UPDATE_DISABLED_MSG``).
+    """
+    print(_SELF_UPDATE_DISABLED_MSG)
+    return
     from rich.console import Console
 
     console = Console()
@@ -1909,7 +1923,13 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
 
 
 def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+    """``git pull`` inside ``~/.hermes/plugins/<name>``.
+
+    DISABLED in local dev builds: runtime ``git pull`` into plugin dirs is
+    frozen (see ``_SELF_UPDATE_DISABLED_MSG``).
+    """
+    print(_SELF_UPDATE_DISABLED_MSG)
+    return {"ok": False, "error": _SELF_UPDATE_DISABLED_MSG}
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {

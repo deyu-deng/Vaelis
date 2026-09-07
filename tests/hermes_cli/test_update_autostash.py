@@ -430,7 +430,7 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
@@ -468,7 +468,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
@@ -576,7 +576,7 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
     side_effect, recorded = _make_update_side_effect(ff_only_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 1
@@ -594,7 +594,7 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
     side_effect, recorded = _make_update_side_effect()
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
@@ -612,7 +612,7 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
     side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
     assert len(checkout_calls) == 1
@@ -630,7 +630,7 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
     side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
     assert len(checkout_calls) == 1
@@ -660,7 +660,7 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     # Stash should have been restored
     assert len(restore_calls) == 1
@@ -681,7 +681,7 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
     side_effect, recorded = _make_update_side_effect()
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     checkout_calls = [c for c in recorded if "checkout" in c]
     assert len(checkout_calls) == 0
@@ -697,7 +697,7 @@ def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
     side_effect, recorded = _make_update_side_effect()
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     fetch_calls = [c for c in recorded if "fetch" in c]
     assert fetch_calls == [["git", "fetch", "origin", "main"]]
@@ -719,7 +719,7 @@ def test_cmd_update_network_error_shows_friendly_message(monkeypatch, tmp_path, 
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):
-        hermes_main.cmd_update(SimpleNamespace())
+        hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     out = capsys.readouterr().out
     assert "Network error" in out
@@ -736,7 +736,7 @@ def test_cmd_update_auth_error_shows_friendly_message(monkeypatch, tmp_path, cap
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):
-        hermes_main.cmd_update(SimpleNamespace())
+        hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     out = capsys.readouterr().out
     assert "Authentication failed" in out
@@ -764,7 +764,7 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):
-        hermes_main.cmd_update(SimpleNamespace())
+        hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)
 
     # Stash restore should NOT have been called
     assert len(restore_calls) == 0
@@ -813,7 +813,7 @@ def test_non_interactive_discard_throws_changes_away(monkeypatch, tmp_path):
     """Gateway/chat-app update with discard mode drops the stash, never restores."""
     restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
 
-    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+    hermes_main._cmd_update_impl(SimpleNamespace(gateway=True), gateway_mode=True)
 
     assert len(discard_calls) == 1
     assert len(restore_calls) == 0
@@ -823,7 +823,7 @@ def test_non_interactive_stash_restores_changes(monkeypatch, tmp_path):
     """Gateway/chat-app update with the default stash mode restores, never discards."""
     restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "stash")
 
-    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+    hermes_main._cmd_update_impl(SimpleNamespace(gateway=True), gateway_mode=True)
 
     assert len(restore_calls) == 1
     assert len(discard_calls) == 0
@@ -838,7 +838,7 @@ def test_interactive_update_ignores_discard_setting(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(hermes_main.sys.stdout, "isatty", lambda: True)
 
-    hermes_main.cmd_update(SimpleNamespace())  # no gateway, no --yes
+    hermes_main._cmd_update_impl(SimpleNamespace(), gateway_mode=False)  # no gateway, no --yes
 
     assert len(restore_calls) == 1
     assert len(discard_calls) == 0
@@ -850,7 +850,7 @@ def test_non_interactive_defaults_to_stash_when_setting_absent(monkeypatch, tmp_
     # Override load_config to return a config with NO update section at all.
     monkeypatch.setattr(hermes_config, "load_config", lambda *a, **kw: {"model": {}})
 
-    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+    hermes_main._cmd_update_impl(SimpleNamespace(gateway=True), gateway_mode=True)
 
     assert len(restore_calls) == 1
     assert len(discard_calls) == 0

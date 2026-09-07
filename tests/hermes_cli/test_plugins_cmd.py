@@ -450,45 +450,44 @@ class TestCmdInstall:
 
 
 class TestCmdUpdate:
-    """Test the update command."""
+    """The plugin update command is a frozen no-op in local dev builds.
+
+    Runtime ``git pull`` into plugin dirs is disabled (same policy as
+    ``hermes update``): the command prints the disable notice and returns
+    without touching subprocesses, regardless of plugin state.
+    """
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
-        from hermes_cli.plugins_cmd import cmd_update
+    def test_update_prints_disable_notice_without_running_git(
+        self, mock_run, mock_plugins_dir, mock_sanitize, capsys
+    ):
+        from hermes_cli.plugins_cmd import _SELF_UPDATE_DISABLED_MSG, cmd_update
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
+        mock_plugins_dir.return_value = MagicMock()
         mock_target = MagicMock()
         mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
-        )
         mock_sanitize.return_value = mock_target
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
 
         cmd_update("test-plugin")
 
-        mock_run.assert_called_once()
+        mock_run.assert_not_called()
+        assert _SELF_UPDATE_DISABLED_MSG in capsys.readouterr().out
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_update_plugin_not_found(self, mock_plugins_dir, mock_sanitize):
-        from hermes_cli.plugins_cmd import cmd_update
+    def test_update_prints_disable_notice_even_for_missing_plugin(
+        self, mock_plugins_dir, mock_sanitize, capsys
+    ):
+        from hermes_cli.plugins_cmd import _SELF_UPDATE_DISABLED_MSG, cmd_update
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = False
-        mock_sanitize.return_value = mock_target
+        mock_plugins_dir.return_value = MagicMock()
+        mock_sanitize.return_value = MagicMock(exists=MagicMock(return_value=False))
 
-        with pytest.raises(SystemExit) as exc_info:
-            cmd_update("nonexistent-plugin")
+        cmd_update("nonexistent-plugin")
 
-        assert exc_info.value.code == 1
+        assert _SELF_UPDATE_DISABLED_MSG in capsys.readouterr().out
 
 
 # ── cmd_remove tests ─────────────────────────────────────────────────────────

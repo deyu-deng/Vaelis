@@ -39,16 +39,18 @@ def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
         assert recommended_update_command() == "hermes update"
 
 
-def test_cmd_update_blocks_managed_homebrew(monkeypatch, capsys):
+def test_cmd_update_is_disabled_even_when_managed(monkeypatch, capsys):
+    """``hermes update`` is a frozen no-op — the managed-mode check never runs."""
+    from hermes_cli.main import _SELF_UPDATE_DISABLED_MSG
+
     monkeypatch.setenv("HERMES_MANAGED", "homebrew")
 
     with patch("hermes_cli.main.subprocess.run") as mock_run:
-        cmd_update(SimpleNamespace())
+        rc = cmd_update(SimpleNamespace())
 
-    assert not mock_run.called
-    captured = capsys.readouterr()
-    assert "managed by Homebrew" in captured.err
-    assert "brew upgrade hermes-agent" in captured.err
+    assert rc == 0
+    assert _SELF_UPDATE_DISABLED_MSG in capsys.readouterr().out
+    mock_run.assert_not_called()
 
 
 def test_optional_skill_source_honors_env_override(monkeypatch, tmp_path):
