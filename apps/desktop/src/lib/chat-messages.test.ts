@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
+import type { SessionMessage } from '@/types/hermes'
+
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
@@ -783,5 +786,134 @@ describe('upsertToolPart', () => {
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
+  })
+})
+
+// WP-G6 (裁定 21.2): sentence ② real payload shape — SessionDB stores
+// tool_name=vaelis_secretary_ask + intent=write_briefing; the transcript must
+// rebuild a tool-call part whose card carries 派给谁 / intent / route / briefing.
+const SECRETARY_RESULT = {
+  ok: true,
+  intent: 'write_briefing',
+  user_text: '根据明天的日程写一段早报',
+  agent: { id: 'agenda-secretary', role: 'secretary', profile: 'agenda', spawned: false },
+  agenda: { events: [{ id: 'e1', title: 'Standup', start_at: '2026-09-08T09:00:00+08:00' }] },
+  sessionId: 'sess-n3',
+  briefing: 'Tomorrow: 09:00 standup, 14:00 review.',
+  route: 'workbuddy',
+  model: 'workbuddy/default'
+}
+
+function secretaryToolRow(overrides: Partial<SessionMessage> = {}): SessionMessage {
+  return {
+    role: 'tool',
+    tool_name: 'vaelis_secretary_ask',
+    tool_call_id: 'call_abc',
+    content: JSON.stringify(SECRETARY_RESULT),
+    timestamp: 3,
+    ...overrides
+  }
+}
+
+function secretaryToolPart(messages: ChatMessage[]): Extract<ChatMessagePart, { type: 'tool-call' }> {
+  const parts = messages.flatMap(m => m.parts).filter((part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call')
+
+  expect(parts.length).toBe(1)
+  expect(parts[0].toolName).toBe('vaelis_secretary_ask')
+
+  return parts[0]
+}
+
+describe('toChatMessages vaelis_secretary_ask (WP-G6 transcript → tool-call part)', () => {
+  it('rebuilds the C3 card fields from a full assistant tool_calls + tool row transcript', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: '根据明天的日程写一段早报', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          {
+            id: 'call_abc',
+            type: 'function',
+            function: {
+              name: 'vaelis_secretary_ask',
+              arguments: JSON.stringify({ intent: 'write_briefing', user_text: '根据明天的日程写一段早报' })
+            }
+          }
+        ]
+      },
+      secretaryToolRow(),
+      { role: 'assistant', content: '这是早报。', timestamp: 4 }
+    ])
+
+    const part = secretaryToolPart(messages)
+    const view = buildToolView(part, '')
+
+    expect(view.title).toBe('Asked 日程秘书')
+    expect(view.subtitle).toContain('日程秘书')
+    expect(view.subtitle).toContain('write briefing')
+    expect(view.subtitle).toContain('route=workbuddy')
+    expect(view.detail).toContain('09:00 standup')
+  })
+
+  it('still rebuilds the card when the assistant tool_calls row is gone (orphan tool row)', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: '根据明天的日程写一段早报', timestamp: 1 },
+      secretaryToolRow(),
+      { role: 'assistant', content: '这是早报。', timestamp: 4 }
+    ])
+
+    const part = secretaryToolPart(messages)
+    const view = buildToolView(part, '')
+
+    expect(view.title).toBe('Asked 日程秘书')
+    expect(view.subtitle).toContain('write briefing')
+    expect(view.subtitle).toContain('route=workbuddy')
+    expect(view.detail).toContain('09:00 standup')
+  })
+
+  it('lands the result on the existing call when the stored call lost its id (no duplicate row)', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: '根据明天的日程写一段早报', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          {
+            function: {
+              name: 'vaelis_secretary_ask',
+              arguments: JSON.stringify({ intent: 'write_briefing', user_text: '根据明天的日程写一段早报' })
+            }
+          }
+        ]
+      },
+      secretaryToolRow(),
+      { role: 'assistant', content: '这是早报。', timestamp: 4 }
+    ])
+
+    const part = secretaryToolPart(messages)
+    const view = buildToolView(part, '')
+
+    // The result lands on the ORIGINAL call part (which keeps its own synthetic
+    // id) — one part, real args, real payload. No duplicate degraded row.
+    expect(part.args).toMatchObject({ intent: 'write_briefing' })
+    expect(part.result).toMatchObject({ intent: 'write_briefing', route: 'workbuddy' })
+    expect(view.subtitle).toContain('route=workbuddy')
+  })
+
+  it('keeps a plain-text tool row readable (non-JSON content still renders as context)', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'hi', timestamp: 1 },
+      secretaryToolRow({ tool_name: 'terminal', content: 'Found 3 matches' }),
+      { role: 'assistant', content: 'done', timestamp: 4 }
+    ])
+
+    const parts = messages.flatMap(m => m.parts).filter((part): part is Extract<ChatMessagePart, { type: 'tool-call' }> => part.type === 'tool-call')
+
+    expect(parts).toHaveLength(1)
+    expect(parts[0].toolName).toBe('terminal')
+    expect(parts[0].result).toMatchObject({ context: 'Found 3 matches' })
   })
 })

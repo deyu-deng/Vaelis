@@ -583,6 +583,31 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number): ChatMessa
   }
 }
 
+// Locate the stored call a role=tool row belongs to. Exact tool_call_id first;
+// when the row carries an id but no call matches it (the persisted assistant
+// row can lose per-call ids, e.g. after compaction), fall back to the oldest
+// same-name call that is still waiting for a result so the payload lands on
+// the real call part instead of appending a duplicate degraded row.
+function matchStoredToolPartIndex(
+  parts: ChatMessagePart[],
+  toolCallId: string | undefined,
+  toolName: string
+): number {
+  if (toolCallId) {
+    const byId = parts.findIndex(part => part.type === 'tool-call' && part.toolCallId === toolCallId)
+
+    if (byId >= 0) {
+      return byId
+    }
+
+    return parts.findIndex(
+      part => part.type === 'tool-call' && part.toolName === toolName && part.result === undefined
+    )
+  }
+
+  return parts.findIndex(part => part.type === 'tool-call' && part.toolName === toolName)
+}
+
 function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
@@ -595,11 +620,7 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
       continue
     }
 
-    const partIndex = message.parts.findIndex(
-      part =>
-        part.type === 'tool-call' &&
-        ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
-    )
+    const partIndex = matchStoredToolPartIndex(message.parts, toolCallId, toolName)
 
     if (partIndex < 0) {
       continue
@@ -625,11 +646,7 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
   const content = toolMessage.content || toolMessage.text || toolMessage.context || toolMessage.name
 
-  const partIndex = parts.findIndex(
-    part =>
-      part.type === 'tool-call' &&
-      ((toolCallId && part.toolCallId === toolCallId) || (!toolCallId && part.toolName === toolName))
-  )
+  const partIndex = matchStoredToolPartIndex(parts, toolCallId, toolName)
 
   if (partIndex < 0) {
     return null
@@ -651,13 +668,22 @@ function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: numbe
   const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
   const args = context ? { context } : {}
 
+  // The stored row carries the tool's full result payload (usually a JSON
+  // string). Parse it so a transcript rebuild that lost the assistant
+  // tool_calls row (compaction / rewind) still surfaces the real structured
+  // card — intent/route/briefing on `vaelis_secretary_ask` — instead of a
+  // `{context: "<raw json>"}` wrapper that renders like an empty result.
+  const parsed = parseStoredToolResult(toolMessage.content || toolMessage.text || toolMessage.context)
+  const parsedRecord = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+  const result = parsedRecord && Object.keys(parsedRecord).length > 0 ? parsedRecord : context ? { context } : {}
+
   return {
     type: 'tool-call',
     toolCallId: toolMessage.tool_call_id || `stored-tool-message-${fallbackIndex}`,
     toolName: name,
     args: args as never,
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
-    result: context ? { context } : {},
+    result,
     isError: false
   }
 }
