@@ -133,20 +133,32 @@ def test_envelope(p: AntigravityProvider) -> None:
 
 def test_models() -> None:
     print("[Models]")
-    for m in AntigravityProvider.served_models:
-        check(
-            m
-            in (
-                "antigravity/gemini-3-pro",
-                "antigravity/gemini-3-flash",
-                "antigravity/claude-sonnet-4-6",
-            ),
-            f"served model {m}",
-        )
+    # served_models / MODEL_MAP are per-instance: seeded in __init__ from
+    # _SEED_MODELS and replaced at runtime by refresh_models(). The class-level
+    # base attribute (Provider.served_models) is just an empty tuple, so the
+    # catalog must be asserted on a built instance.
+    prov = build_provider()
+    expected = {
+        "antigravity/gemini-3-flash",
+        "antigravity/gemini-3-pro-high",
+        "antigravity/gemini-3-pro-low",
+        "antigravity/gemini-3.1-pro-high",
+        "antigravity/gemini-3.1-pro-low",
+        "antigravity/claude-opus-4-6-thinking",
+        "antigravity/claude-opus-4-5-thinking",
+        "antigravity/claude-sonnet-4-6",
+    }
+    for m in prov.served_models:
+        check(m in expected, f"served model {m}")
     check(
-        AntigravityProvider.MODEL_MAP["antigravity/gemini-3-pro"] == "gemini-3-pro",
-        "MODEL_MAP strips antigravity/ prefix",
+        set(prov.served_models) == expected,
+        "served catalog matches the seed catalog exactly",
     )
+    for m in prov.served_models:
+        check(
+            prov.MODEL_MAP[m] == m.split("/", 1)[1],
+            f"MODEL_MAP strips antigravity/ prefix for {m}",
+        )
 
 
 def test_composite() -> None:
