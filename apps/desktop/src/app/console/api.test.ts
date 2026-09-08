@@ -14,6 +14,7 @@ vi.mock('@/hermes', () => ({
 import {
   confirmAgendaEventAction,
   createAgent,
+  getAgentOverview,
   getAgentSubagentLog,
   getOutsourcedSessionTarget
 } from './api'
@@ -121,5 +122,64 @@ describe('S2 mock endpoints (U4)', () => {
 
     expect(target.url).toContain('cursor')
     expect(target.url).toContain('cur%201')
+  })
+})
+
+// R-013 (裁定 20): the overview is the single source for the agent's bound
+// folder. The live envelope carries `projectPath` through; the butler mock
+// fallback has no binding, so the field stays absent (file tree must stay
+// empty instead of inheriting the previous cwd).
+describe('getAgentOverview projectPath (WP-R013-FE)', () => {
+  function stubHermesDesktop(api: ReturnType<typeof vi.fn>): () => void {
+    const previous = (window as { hermesDesktop?: unknown }).hermesDesktop
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+
+    return () => {
+      if (previous) {
+        Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previous })
+      } else {
+        Reflect.deleteProperty(window, 'hermesDesktop')
+      }
+    }
+  }
+
+  it('surfaces the backend-bound folder from the live envelope', async () => {
+    const api = vi.fn().mockResolvedValue({
+      data: {
+        agent: { id: 'vaelis-code', name: 'vaelis-code', status: 'idle', todayCalls: 0 },
+        projectPath: 'D:\\projects\\vaelis',
+        sessionId: 'sess-1',
+        todayCostUsd: 0,
+        todayTokens: 0
+      },
+      ok: true
+    })
+    const restore = stubHermesDesktop(api)
+
+    try {
+      const overview = await getAgentOverview('vaelis-code')
+
+      expect(overview.projectPath).toBe('D:\\projects\\vaelis')
+    } finally {
+      restore()
+    }
+  })
+
+  it('keeps the butler mock fallback free of a bound folder', async () => {
+    const api = vi.fn().mockRejectedValue(new Error('offline'))
+    const restore = stubHermesDesktop(api)
+
+    try {
+      const overview = await getAgentOverview('agenda-secretary')
+
+      expect(overview.projectPath).toBeUndefined()
+      expect(overview.agent.id).toBe('agenda-secretary')
+    } finally {
+      restore()
+    }
   })
 })

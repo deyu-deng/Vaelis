@@ -1166,6 +1166,10 @@ export function DesktopController() {
       let profile =
         $consoleAgents.get().find(agent => agent.id === agentId)?.profile?.trim() || agentId
       let sessionId = ''
+      // R-013 (裁定 20): the bound folder served by the overview. Stays null
+      // when the overview itself failed — then the cwd is left untouched
+      // rather than pretending we know the binding.
+      let agentProjectPath: null | string = null
 
       try {
         const overview = await getAgentOverview(agentId)
@@ -1176,8 +1180,21 @@ export function DesktopController() {
 
         sessionId = overview.sessionId?.trim() || ''
         profile = overview.agent.profile?.trim() || profile
+        agentProjectPath = (overview.projectPath ?? '').trim()
       } catch {
         // Offline / mock miss — still try the registry-default profile name.
+      }
+
+      // Mount the agent's bound folder for the right-rail file tree. Empty
+      // (butler-type: no project) clears instead of inheriting L1 / the
+      // previous agent's cwd; a nonexistent path just renders an empty tree
+      // and never blocks the center chat.
+      const mountAgentCwd = () => {
+        if (agentProjectPath === null) {
+          return
+        }
+
+        setCurrentCwd(agentProjectPath)
       }
 
       if (cancelled) {
@@ -1250,6 +1267,8 @@ export function DesktopController() {
         try {
           await resumeSessionRef.current(sessionId)
 
+          mountAgentCwd()
+
           return
         } catch {
           // Fall through to an empty draft on this profile.
@@ -1261,6 +1280,7 @@ export function DesktopController() {
       }
 
       prepareFreshDraftInPlace()
+      mountAgentCwd()
     })().catch(() => undefined)
 
     return () => {

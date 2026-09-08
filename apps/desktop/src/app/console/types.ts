@@ -92,6 +92,12 @@ export interface AgentOverview {
   sessionId: string
   todayCostUsd: number
   todayTokens: number
+  /**
+   * R-013 (裁定 20): the folder this L2 agent is bound to (backend
+   * `project_path`). Absent/empty for butler-type agents with no project —
+   * the file tree must stay empty then, never inherit the previous cwd.
+   */
+  projectPath?: string
 }
 
 export type AgentTaskResult = 'error' | 'failed' | 'ok' | 'pending'
