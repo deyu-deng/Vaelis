@@ -4449,17 +4449,24 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  // READY can fire before the event loop is responsive (Windows cold import /
+  // GIL stalls — see web_server lifespan comments and "event loop stalled Ns"
+  // in gui.log). A single 15s hung /api/status probe used to burn most of the
+  // wait budget and surface "Timed out connecting … after 15000ms" even though
+  // the socket was already listening. Prefer short probes + a longer overall
+  // deadline so we ride out transient stalls without failing the boot.
+  const deadline = Date.now() + 90_000
+  const probeTimeoutMs = 2_500
   let lastError = null
 
   while (Date.now() < deadline) {
     try {
-      await fetchJson(`${baseUrl}/api/status`, token)
+      await fetchJson(`${baseUrl}/api/status`, token, { timeoutMs: probeTimeoutMs })
 
       return
     } catch (error) {
       lastError = error
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, 400))
     }
   }
 
@@ -6921,6 +6928,9 @@ async function startHermes() {
       error: null
     })
 
+    // R-019 MVP: product sidecars (chatlog :5030 + aigw :8000). Never block boot.
+    ensureLocalSidecars()
+
     return {
       baseUrl,
       mode: 'local',
@@ -7629,6 +7639,229 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+
+// --- Product sidecars (R-019 MVP) -------------------------------------------
+// Desktop boot owns chatlog (:5030) and the shared product aigw (:8000).
+// Distinct from per-app Desktop Quota gateways (8019/8020/8021). Soft-fail only
+// — a red sidecar must never block the Hermes backend or the window.
+let chatlogChild: ReturnType<typeof spawn> | null = null
+
+async function probeLocalHttp(url: string, timeoutMs = 2000): Promise<boolean> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+async function chatlogHealthy(): Promise<boolean> {
+  return (
+    (await probeLocalHttp('http://127.0.0.1:5030/health')) ||
+    (await probeLocalHttp('http://127.0.0.1:5030/api/v1/health'))
+  )
+}
+
+function resolveChatlogBinary(): null | string {
+  const candidates = [
+    process.env.VAELIS_CHATLOG_BIN,
+    process.env.CHATLOG_BIN,
+    path.resolve(app.getAppPath(), '..', '..', 'tools', 'chatlog', 'bin', 'chatlog.exe'),
+    path.join('D:', 'Tools', 'wechat', 'chatlog', 'chatlog.exe')
+  ].filter((value): value is string => Boolean(value && value.trim()))
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate
+      }
+    } catch {
+      // keep looking
+    }
+  }
+
+  return null
+}
+
+/** Read decrypt keys for CLI flags. Never log the values. */
+function loadChatlogCliKeys(): { dataDir?: string; dataKey?: string; imgKey?: string } {
+  const fromEnv = {
+    dataDir: process.env.CHATLOG_DATA_DIR || undefined,
+    dataKey: process.env.CHATLOG_DATA_KEY || undefined,
+    imgKey: process.env.CHATLOG_IMG_KEY || undefined
+  }
+
+  if (fromEnv.dataKey) {
+    return fromEnv
+  }
+
+  try {
+    const cfgPath = path.join(os.homedir(), '.chatlog', 'chatlog.json')
+
+    if (!fs.existsSync(cfgPath)) {
+      return fromEnv
+    }
+
+    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, any>
+    const history = Array.isArray(raw.history) ? raw.history : []
+    const latest = history.length > 0 ? history[history.length - 1] : raw
+
+    return {
+      dataDir: latest?.data_dir || raw.data_dir || fromEnv.dataDir,
+      dataKey: latest?.data_key || raw.data_key || fromEnv.dataKey,
+      imgKey: latest?.img_key || raw.img_key || fromEnv.imgKey
+    }
+  } catch {
+    return fromEnv
+  }
+}
+
+function killStrayChatlogProcesses(): void {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  try {
+    // Startup VBS used to launch a bare chatlog.exe that never binds :5030.
+    // Only called when health is already red.
+    execFileSync('taskkill', ['/F', '/IM', 'chatlog.exe'], {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: 5000
+    })
+  } catch {
+    // no process / already gone
+  }
+}
+
+async function ensureChatlogServer(): Promise<void> {
+  if (await chatlogHealthy()) {
+    rememberLog('[sidecar] chatlog already healthy on :5030')
+    return
+  }
+
+  const exe = resolveChatlogBinary()
+
+  if (!exe) {
+    rememberLog('[sidecar] chatlog binary not found; skip (set VAELIS_CHATLOG_BIN)')
+    return
+  }
+
+  killStrayChatlogProcesses()
+  await new Promise(resolve => setTimeout(resolve, 400))
+
+  if (await chatlogHealthy()) {
+    rememberLog('[sidecar] chatlog became healthy after clearing stray process')
+    return
+  }
+
+  const keys = loadChatlogCliKeys()
+  const args = ['server', '--addr', '127.0.0.1:5030', '--auto-decrypt']
+
+  if (keys.dataDir) {
+    args.push('--data-dir', keys.dataDir)
+  }
+
+  if (keys.dataKey) {
+    args.push('--data-key', keys.dataKey)
+  }
+
+  if (keys.imgKey) {
+    args.push('--img-key', keys.imgKey)
+  }
+
+  if (!keys.dataKey) {
+    rememberLog('[sidecar] chatlog: no CHATLOG_DATA_KEY / ~/.chatlog key; spawning anyway')
+  }
+
+  try {
+    if (chatlogChild && !chatlogChild.killed) {
+      stopBackendChild(chatlogChild)
+      chatlogChild = null
+    }
+
+    chatlogChild = spawn(exe, args, {
+      cwd: path.dirname(exe),
+      env: {
+        ...process.env,
+        ...(keys.dataKey ? { CHATLOG_DATA_KEY: keys.dataKey } : {}),
+        ...(keys.imgKey ? { CHATLOG_IMG_KEY: keys.imgKey } : {})
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+      windowsHide: true
+    })
+
+    chatlogChild.stdout?.on('data', (chunk: Buffer) => {
+      const line = chunk.toString().trim()
+      if (line) rememberLog(`[chatlog] ${line}`)
+    })
+    chatlogChild.stderr?.on('data', (chunk: Buffer) => {
+      const line = chunk.toString().trim()
+      if (line) rememberLog(`[chatlog] ${line}`)
+    })
+    chatlogChild.on('exit', (code: number | null) => {
+      rememberLog(`[chatlog] exited code=${code}`)
+      chatlogChild = null
+    })
+
+    const deadline = Date.now() + 15000
+
+    while (Date.now() < deadline) {
+      if (await chatlogHealthy()) {
+        rememberLog('[sidecar] chatlog healthy on :5030')
+        return
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+
+    rememberLog('[sidecar] chatlog spawned but :5030 still red (WeChat login / key?)')
+  } catch (error) {
+    rememberLog(`[sidecar] chatlog spawn failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function ensureProductAigw(): Promise<void> {
+  if (
+    (await probeLocalHttp('http://127.0.0.1:8000/healthz')) ||
+    (await probeLocalHttp('http://127.0.0.1:8000/v1/models'))
+  ) {
+    rememberLog('[sidecar] product aigw already healthy on :8000')
+    return
+  }
+
+  const aigwDir = resolveAigwDir()
+  const configPath = path.join(aigwDir, 'config.yaml')
+
+  if (!fs.existsSync(configPath)) {
+    rememberLog(`[sidecar] product aigw config missing at ${configPath}`)
+    return
+  }
+
+  const apiKey = process.env.AIGW_API_KEY || process.env.VAELIS_AIGW_API_KEY || 'sk-local-dev-key'
+  const result = await startAigwGateway('product', configPath, {}, {
+    port: 8000,
+    apiKey,
+    timeoutMs: 20000
+  })
+
+  if (result.ok) {
+    rememberLog(`[sidecar] product aigw ready on :8000 pid=${result.pid ?? '?'}`)
+  } else {
+    rememberLog(`[sidecar] product aigw failed: ${result.error || 'unknown'}`)
+  }
+}
+
+/** Fire-and-forget; safe to call on every backend.ready. */
+function ensureLocalSidecars(): void {
+  void ensureChatlogServer().catch(error => {
+    rememberLog(`[sidecar] chatlog ensure error: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  void ensureProductAigw().catch(error => {
+    rememberLog(`[sidecar] aigw ensure error: ${error instanceof Error ? error.message : String(error)}`)
+  })
+}
 
 // --- Vaelis Gateway (aigw) — local desktop-quota aggregator -----------------
 // Bridges the user's own aigw (OpenAI-compatible HTTP gateway) into onboarding
@@ -9767,6 +10000,16 @@ app.on('before-quit', () => {
 
   stopBackendChild(hermesProcess)
   stopAllPoolBackends()
+
+  if (chatlogChild) {
+    stopBackendChild(chatlogChild)
+    chatlogChild = null
+  }
+
+  for (const [appId, child] of [...aigwChildren.entries()]) {
+    stopBackendChild(child)
+    clearAigwChild(appId)
+  }
 })
 
 app.on('window-all-closed', () => {
