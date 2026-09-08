@@ -4,10 +4,12 @@ import type { SessionInfo } from '@/hermes'
 
 import {
   bindL1GatewayIfMasterExists,
+  collectL1BypassSessionIds,
   findKnownOverviewSession,
   findLatestSessionForProfile,
   pickL1MainSession,
   profileListHasMaster,
+  resolveL1HomeProfile,
   sameCronSignature,
   secretaryShellLabel,
   secretaryShortName
@@ -148,5 +150,66 @@ describe('pickL1MainSession (WP-G7)', () => {
     ]
 
     expect(pickL1MainSession(rows, 'default', 'l2')?.id).toBe('l1')
+  })
+})
+
+describe('resolveL1HomeProfile (L2→L1 center stale)', () => {
+  const agents = ['agenda', 'l2-agenda', 'simulation']
+
+  it('keeps a remembered default home after an L2 agent profile is active', () => {
+    expect(
+      resolveL1HomeProfile({
+        activeProfile: 'agenda',
+        agentProfiles: agents,
+        rememberedHome: 'default'
+      })
+    ).toBe('default')
+  })
+
+  it('rejects an agent profile as remembered home and falls back to default', () => {
+    expect(
+      resolveL1HomeProfile({
+        activeProfile: 'agenda',
+        agentProfiles: agents,
+        rememberedHome: 'agenda'
+      })
+    ).toBe('default')
+  })
+
+  it('keeps a non-agent custom profile as home', () => {
+    expect(
+      resolveL1HomeProfile({
+        activeProfile: 'agenda',
+        agentProfiles: agents,
+        rememberedHome: 'work'
+      })
+    ).toBe('work')
+  })
+})
+
+describe('collectL1BypassSessionIds', () => {
+  it('keeps the mainline and drops other sessions on the L1 profile', () => {
+    const rows = [
+      { id: 'main', profile: 'default' },
+      { id: 'old', profile: 'default' },
+      { id: 'agent', profile: 'l2-agenda' }
+    ]
+
+    expect(
+      collectL1BypassSessionIds(rows, {
+        agentProfiles: ['l2-agenda'],
+        keepId: 'main',
+        profile: 'default'
+      })
+    ).toEqual(['old'])
+  })
+
+  it('returns every L1-profile session when there is no keep id', () => {
+    const rows = [
+      { id: 'a', profile: 'default' },
+      { id: 'b', profile: 'default' }
+    ]
+
+    expect(collectL1BypassSessionIds(rows, { profile: 'default' }).sort()).toEqual(['a', 'b'])
   })
 })

@@ -157,3 +157,81 @@ export function pickL1MainSession<
 
   return findLatestSessionForProfile(sessions, profile)
 }
+
+/**
+ * Every L1-home local session except the kept mainline. Cron / messaging /
+ * subagent / agent-profile threads are left alone — those are not "bypass chats".
+ */
+export function collectL1BypassSessionIds(
+  sessions: ReadonlyArray<{ id: string; profile?: null | string }>,
+  options: {
+    agentProfiles?: Iterable<string>
+    keepId?: null | string
+    profile: string
+  }
+): string[] {
+  const key = normalizeProfileKey(options.profile)
+  const keep = (options.keepId || '').trim()
+  const agentSet = new Set(
+    [...(options.agentProfiles ?? [])].map(name => normalizeProfileKey(name)).filter(Boolean)
+  )
+
+  const ids: string[] = []
+
+  for (const session of sessions) {
+    if (keep && session.id === keep) {
+      continue
+    }
+
+    if (normalizeProfileKey(session.profile ?? 'default') !== key) {
+      continue
+    }
+
+    // Agent-owned profiles nest under agents; never purge those as L1 bypass.
+    if (agentSet.has(normalizeProfileKey(session.profile ?? ''))) {
+      continue
+    }
+
+    ids.push(session.id)
+  }
+
+  return ids
+}
+
+/**
+ * Profile to bind when L1 returns without a `master` profile (裁定 6).
+ *
+ * After an L2 visit the live gateway is often still on the agent profile. If we
+ * "stay" there, `pickL1MainSession` resumes the L2 transcript under L1 chrome
+ * (返回总秘书 → center still looks like the agent). Prefer a remembered L1
+ * home; never treat a known agent profile as L1 home.
+ */
+export function resolveL1HomeProfile(options: {
+  activeProfile?: null | string
+  agentProfiles?: Iterable<string>
+  rememberedHome?: null | string
+}): string {
+  const agentSet = new Set(
+    [...(options.agentProfiles ?? [])].map(name => normalizeProfileKey(name)).filter(Boolean)
+  )
+
+  const pick = (raw: null | string | undefined): string | null => {
+    const key = normalizeProfileKey((raw || '').trim() || '')
+
+    if (!key) {
+      return null
+    }
+
+    if (key === 'master' || key === 'default') {
+      return key
+    }
+
+    if (agentSet.has(key)) {
+      return null
+    }
+
+    return key
+  }
+
+  return pick(options.rememberedHome) || pick(options.activeProfile) || 'default'
+}

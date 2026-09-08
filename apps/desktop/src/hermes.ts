@@ -312,6 +312,19 @@ export function deleteSession(id: string, profile?: string | null): Promise<{ ok
   })
 }
 
+/** Delete many sessions in one transaction (capped at 500 ids server-side). */
+export function bulkDeleteSessions(
+  ids: string[],
+  profile?: string | null
+): Promise<{ ok: boolean; deleted: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; deleted: number }>({
+    ...(profile ? { profile } : {}),
+    path: '/api/sessions/bulk-delete',
+    method: 'POST',
+    body: { ids, ...(profile ? { profile } : {}) }
+  })
+}
+
 export function renameSession(
   id: string,
   title: string,

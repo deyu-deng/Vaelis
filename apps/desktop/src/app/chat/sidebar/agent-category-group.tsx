@@ -30,6 +30,8 @@ export interface AgentCategoryGroupProps {
   category: AgentCategory
   /** Collapse state lives here; open by default so groups don't hide agents. */
   defaultOpen?: boolean
+  /** L1: agents are navigation only — no nested conversation drawers. */
+  hideSessions?: boolean
   label: string
   onArchiveSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
@@ -52,6 +54,7 @@ export function AgentCategoryGroup({
   agents,
   category,
   defaultOpen = true,
+  hideSessions = false,
   label,
   onArchiveSession,
   onDeleteSession,
@@ -85,8 +88,10 @@ export function AgentCategoryGroup({
       {open && (
         <div className="flex flex-col gap-px pt-0.5">
           {agents.map(agent => {
-            const agentSessions = sessionsByProfile.get((agent.profile ?? '').trim()) ?? []
-            const sessionsOpen = openAgentId === agent.id
+            const agentSessions = hideSessions
+              ? []
+              : (sessionsByProfile.get((agent.profile ?? '').trim()) ?? [])
+            const sessionsOpen = !hideSessions && openAgentId === agent.id
 
             return (
               <div key={agent.id}>

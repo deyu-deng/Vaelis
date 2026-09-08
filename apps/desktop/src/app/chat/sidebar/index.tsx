@@ -115,7 +115,7 @@ import {
 
 import { createAgent } from '../../console/api'
 import { $consoleAgents, $consoleAgentsLoading, refreshConsoleAgents } from '../../console/store/agents'
-import { pickL1MainSession, readL1MainSessionId, secretaryShellLabel } from '../../desktop-controller-utils'
+import { secretaryShellLabel } from '../../desktop-controller-utils'
 import { agentRoute, type AppView, ARTIFACTS_ROUTE, HOME_ROUTE, MESSAGING_ROUTE, type ShellLevel, SKILLS_ROUTE } from '../../routes'
 import type { SidebarNavItem } from '../../types'
 
@@ -1057,32 +1057,8 @@ export function ChatSidebar({
     return agent ? (c.agentCategories[normalizeAgentCategory(agent.category)] ?? '') : ''
   }, [c.agentCategories, l2Id, secretaryAgents])
 
-  // R-015: one L1 main thread. Mainline = the remembered id when still loaded,
-  // else the latest L1-profile tip (historical sessions are never migrated).
-  const l1SessionProfile = useMemo(
-    () => (secretaryAgents.some(agent => (agent.profile ?? '').trim().toLowerCase() === 'master') ? 'master' : 'default'),
-    [secretaryAgents]
-  )
-
-  const mainlineSession = useMemo(
-    () => pickL1MainSession(displayAgentSessions, l1SessionProfile, readL1MainSessionId(l1SessionProfile)),
-    [displayAgentSessions, l1SessionProfile]
-  )
-
-  const mainlineId = mainlineSession?.id ?? null
-
-  // R-015: bypass sessions = every other L1-profile thread (manual New session
-  // and legacy history). They live in the collapsed drawer, never the main list.
-  const bypassSessions = useMemo(
-    () =>
-      displayAgentSessions.filter(
-        session => isL1SessionProfile(session.profile, agentProfileSet) && session.id !== mainlineId && !pinnedRealIdSet.has(session.id)
-      ),
-    [agentProfileSet, displayAgentSessions, mainlineId, pinnedRealIdSet]
-  )
-
-  // Main recents list drops agent-owned threads (they nest under their agent)
-  // and L1 threads (the mainline pins top; bypass lives in the drawer).
+  // Recents list drops agent-owned threads (they nest under their agent) and
+  // L1-profile threads (L1 keeps a single center chat; no sidebar session list).
   const mainSidebarSessions = useMemo(
     () =>
       displayAgentSessions.filter(session => {
@@ -1174,10 +1150,6 @@ export function ChatSidebar({
 
   const recentsVirtualizes =
     !displayAgentGroups?.length && !agentProjectTree?.length && mainSidebarSessions.length >= VIRTUALIZE_THRESHOLD
-
-  // R-015: the bypass drawer starts collapsed — a secondary entry, not a rival
-  // list next to the main thread.
-  const [bypassOpen, setBypassOpen] = useState(false)
 
   // Keep the persisted parent + worktree orders reconciled with what's on screen:
   // freshly-seen repos/worktrees surface at the top, vanished ones drop out of
@@ -1356,6 +1328,7 @@ export function ChatSidebar({
                       activeSessionId={activeSidebarSessionId}
                       agents={group.agents}
                       category={group.category}
+                      hideSessions={l1}
                       key={group.category}
                       label={c.agentCategories[group.category] ?? group.category}
                       onArchiveSession={onArchiveSession}
@@ -1373,7 +1346,8 @@ export function ChatSidebar({
           </SidebarGroup>
         )}
 
-        {contentVisible && showSessionSections && (
+        {/* L1: single center chat only — no conversation lists in the rail. */}
+        {contentVisible && showSessionSections && !l1 && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
@@ -1385,7 +1359,7 @@ export function ChatSidebar({
           </div>
         )}
 
-        {contentVisible && showSessionSections && (
+        {contentVisible && showSessionSections && !l1 && (
           <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
             {trimmedQuery && (
               <SidebarSessionsSection
@@ -1435,27 +1409,6 @@ export function ChatSidebar({
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 sortable={pinnedSessions.length > 1}
-                workingSessionIdSet={workingSessionIdSet}
-              />
-            )}
-
-            {!trimmedQuery && l1 && mainlineSession && (
-              <SidebarSessionsSection
-                activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex flex-col gap-px pb-1.75 pt-1', GROUP_BODY)}
-                emptyState={null}
-                label={c.mainlineSession}
-                onArchiveSession={onArchiveSession}
-                onBranchSession={onBranchSession}
-                onDeleteSession={onDeleteSession}
-                onResumeSession={onResumeSession}
-                onToggle={() => undefined}
-                onTogglePin={pinSession}
-                open
-                pinned={false}
-                rootClassName="shrink-0 p-0 pb-1"
-                sessions={[mainlineSession]}
-                sortable={false}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -1615,29 +1568,6 @@ export function ChatSidebar({
               />
             )}
 
-            {/* R-015: bypass-session drawer — collapsed secondary entry, never
-                the main list. Only rendered when such sessions exist. */}
-            {!trimmedQuery && l1 && bypassSessions.length > 0 && (
-              <SidebarSessionsSection
-                activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex max-h-44 flex-col gap-px pb-1.75 pt-1', GROUP_BODY)}
-                emptyState={null}
-                label={c.bypassSessions}
-                labelMeta={String(bypassSessions.length)}
-                onArchiveSession={onArchiveSession}
-                onBranchSession={onBranchSession}
-                onDeleteSession={onDeleteSession}
-                onResumeSession={onResumeSession}
-                onToggle={() => setBypassOpen(!bypassOpen)}
-                onTogglePin={pinSession}
-                open={bypassOpen}
-                pinned={false}
-                rootClassName="shrink-0 p-0 pb-1"
-                sessions={bypassSessions}
-                workingSessionIdSet={workingSessionIdSet}
-              />
-            )}
-
             {!trimmedQuery &&
               !worktreeGroupingActive &&
               messagingGroups.map(group => {
@@ -1699,7 +1629,7 @@ export function ChatSidebar({
           </div>
         )}
 
-        {contentVisible && !showSessionSections && (
+        {contentVisible && !showSessionSections && !l1 && (
           <SidebarBlankState
             actionLabel={level ? s.nav['new-session'] : s.projects.newButton}
             onAction={level ? () => onNewSessionInWorkspace(null) : openProjectCreate}

@@ -20,10 +20,10 @@ import { cn } from '@/lib/utils'
 import { $agendaError, $agendaEvents, $agendaLoading } from '@/store/agenda'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
-import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
+import { bulkDeleteSessions, getSessionMessages, listAllProfileSessions, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
-import { isMessagingSource } from '../lib/session-source'
+import { isMessagingSource, MESSAGING_SESSION_SOURCE_IDS } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
 import {
@@ -104,9 +104,11 @@ import { getAgentOverview } from './console/api'
 import { $consoleAgents, refreshConsoleAgents } from './console/store/agents'
 import {
   bindL1GatewayIfMasterExists,
+  collectL1BypassSessionIds,
   findKnownOverviewSession,
   pickL1MainSession,
   readL1MainSessionId,
+  resolveL1HomeProfile,
   secretaryShellLabel,
   writeL1MainSessionId
 } from './desktop-controller-utils'
@@ -258,6 +260,10 @@ export function DesktopController() {
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  // Last non-agent profile L1 successfully bound to. Returning from L2 without
+  // `master` must restore this — otherwise "stayed" keeps the agent profile and
+  // the center resumes the L2 transcript under L1 chrome.
+  const l1GatewayProfileRef = useRef(normalizeProfileKey($activeGatewayProfile.get() || 'default'))
 
   const {
     agentsOpen,
@@ -1058,16 +1064,51 @@ export function DesktopController() {
           return
         }
 
+        let profileForSessions: string
+
+        if (masterBound === 'bound-master') {
+          profileForSessions = 'master'
+        } else {
+          // After L2 the live gateway is often still on the agent profile.
+          // Resolve back to the L1 home (remembered default/custom) before
+          // picking the mainline — otherwise the center keeps the L2 chat.
+          const agentProfiles = $consoleAgents
+            .get()
+            .map(agent => normalizeProfileKey((agent.profile || agent.id).trim()))
+            .filter(Boolean)
+          profileForSessions = resolveL1HomeProfile({
+            activeProfile: $activeGatewayProfile.get(),
+            agentProfiles,
+            rememberedHome: l1GatewayProfileRef.current
+          })
+          const live = normalizeProfileKey($activeGatewayProfile.get() || 'default')
+
+          if (live !== profileForSessions) {
+            try {
+              await ensureGatewayProfile(profileForSessions)
+            } catch {
+              prepareFreshDraftInPlace()
+
+              return
+            }
+
+            if (cancelled) {
+              return
+            }
+
+            if ($gatewayState.get() !== 'open') {
+              prepareFreshDraftInPlace()
+
+              return
+            }
+          }
+        }
+
         await refreshSessionsRef.current().catch(() => undefined)
 
         if (cancelled) {
           return
         }
-
-        const profileForSessions =
-          masterBound === 'bound-master'
-            ? 'master'
-            : normalizeProfileKey($activeGatewayProfile.get() || 'default')
 
         const existing = pickL1MainSession(
           $sessions.get(),
@@ -1081,6 +1122,42 @@ export function DesktopController() {
         } else {
           prepareFreshDraftInPlace()
         }
+
+        // Drop every other L1 local chat — one conversation only, no bypass drawer.
+        try {
+          const agentProfiles = $consoleAgents
+            .get()
+            .map(agent => (agent.profile ?? '').trim())
+            .filter(Boolean)
+          const listed = await listAllProfileSessions(500, 0, 'exclude', 'recent', profileForSessions, {
+            excludeSources: ['cron', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+          })
+          const bypassIds = collectL1BypassSessionIds(listed.sessions, {
+            agentProfiles,
+            keepId: existing?.id ?? null,
+            profile: profileForSessions
+          })
+
+          for (let i = 0; i < bypassIds.length; i += 500) {
+            const chunk = bypassIds.slice(i, i + 500)
+
+            if (chunk.length) {
+              await bulkDeleteSessions(chunk, profileForSessions)
+            }
+          }
+
+          if (bypassIds.length) {
+            await refreshSessionsRef.current().catch(() => undefined)
+          }
+        } catch {
+          // Non-fatal: UI already hides bypass lists; purge can retry next L1 enter.
+        }
+
+        if (cancelled) {
+          return
+        }
+
+        l1GatewayProfileRef.current = profileForSessions
 
         return
       }
@@ -1119,6 +1196,16 @@ export function DesktopController() {
       // the agent's dispatch). Bind unconditionally; the registry is the source
       // of truth for which profiles exist.
       const previousProfile = $activeGatewayProfile.get()
+      // Refresh L1 home from the profile we're leaving when it is still an L1
+      // profile; keep the remembered home when hopping L2→L2 (agent→agent).
+      l1GatewayProfileRef.current = resolveL1HomeProfile({
+        activeProfile: previousProfile,
+        agentProfiles: $consoleAgents
+          .get()
+          .map(agent => normalizeProfileKey((agent.profile || agent.id).trim()))
+          .filter(Boolean),
+        rememberedHome: l1GatewayProfileRef.current
+      })
 
       try {
         await ensureGatewayProfile(profile)
