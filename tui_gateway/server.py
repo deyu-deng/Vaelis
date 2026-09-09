@@ -8417,6 +8417,38 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _rewrite_prompt_submit_text(sid: str, text: Any) -> Any:
+    """Fire the ``pre_prompt_submit`` plugin hook for one user turn.
+
+    Desktop and dashboard chat both reach the agent through this module's
+    ``prompt.submit`` RPC (see ``tui_gateway/ws.py::handle_ws``), so this is the
+    single seam that covers an L1 user turn on every GUI surface.  The gateway
+    (chat platforms) has its own ``pre_gateway_dispatch`` seam and is
+    deliberately not touched here.
+
+    A plugin returns ``{"action": "rewrite", "text": "..."}`` to replace the
+    submitted text, or anything else / ``None`` to leave the turn alone.  First
+    usable rewrite wins.  The hook is best-effort: any failure falls through
+    with the original text so a broken plugin can never swallow a prompt.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        for _result in _invoke_hook("pre_prompt_submit", session_id=sid, text=text):
+            if not isinstance(_result, dict):
+                continue
+            if _result.get("action") != "rewrite":
+                continue
+            _new_text = _result.get("text")
+            if isinstance(_new_text, str) and _new_text.strip():
+                return _new_text
+    except Exception as _hook_exc:
+        logger.warning("pre_prompt_submit hook failed: %s", _hook_exc)
+    return text
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
@@ -8424,6 +8456,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # Narrow hard-route seam (WP-BE-13): a plugin may pin a frozen utterance
+    # onto a tool call by rewriting the turn text.  Non-matching utterances
+    # come back byte-for-byte identical.
+    text = _rewrite_prompt_submit_text(sid, text)
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.

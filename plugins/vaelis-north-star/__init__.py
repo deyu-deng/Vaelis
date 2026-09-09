@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from . import hard_route as HR
 from . import master_tools as MT
 from . import tools as T
 
@@ -160,9 +161,14 @@ def register(ctx) -> None:
     except Exception:
         logger.debug("vaelis-north-star: toolset ensure on active profile skipped", exc_info=True)
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+    # WP-BE-13 / 裁定 21.1: pin §8.2's two frozen L1 utterances onto
+    # vaelis_secretary_ask at the GUI/dashboard user-turn boundary.
+    # (裁定 21.1 有效：软路由 2026-09-08 已失败，窄硬路由就是当前产品形态；
+    #  任何 QA 验证需要软路由对照时，用临时分支，不许关交付钩子。)
+    ctx.register_hook("pre_prompt_submit", HR.on_pre_prompt_submit)
     logger.info(
         "vaelis-north-star: registered deep tool 'vaelis' + 5 master "
-        "narrow tools (incl. vaelis_secretary_ask) + gateway hook"
+        "narrow tools (incl. vaelis_secretary_ask) + gateway hook + §8.2 hard route"
     )
 
 

@@ -171,6 +171,16 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # GUI/dashboard user-turn pre-dispatch hook. Fired once per user turn by
+    # ``tui_gateway.server``'s ``prompt.submit`` RPC — the seam the desktop app
+    # and the dashboard both use to reach the agent (the chat platforms use
+    # ``pre_gateway_dispatch`` instead). Plugins may return a dict to influence
+    # flow:
+    #   {"action": "rewrite", "text": "..."}  -> replace the submitted text
+    #   {"action": "allow"}  /  None          -> submit unchanged
+    # Kwargs: session_id: str, text: str (the raw user turn).
+    # Fail-open: an exception or a non-string text leaves the turn untouched.
+    "pre_prompt_submit",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
