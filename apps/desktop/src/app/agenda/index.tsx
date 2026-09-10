@@ -56,7 +56,7 @@ import {
   PanelSectionLabel
 } from '../overlays/panel'
 
-import { $talkerLoading, $talkerState } from './talker/store'
+import { $talkerLoading, $talkerState, refreshTalkerCollection } from './talker/store'
 import { TalkerCollection } from './talker/talker-collection'
 
 // Board refresh cadence. The spec allows up to 10s staleness (ADR-0008), and
@@ -188,6 +188,13 @@ export function AgendaView({ onClose }: AgendaViewProps) {
     return () => window.clearInterval(intervalId)
   }, [refresh])
 
+  // A7 (WP-A7-EMPTY): prefetch the collection state so the entry's meta
+  // ("not started" / active count) is real on first paint — the empty board
+  // still offers the first-review entry instead of hiding it.
+  useEffect(() => {
+    void refreshTalkerCollection()
+  }, [])
+
   const grouped = useMemo(() => {
     const buckets = new Map<string, AgendaEvent[]>()
 
@@ -281,17 +288,6 @@ export function AgendaView({ onClose }: AgendaViewProps) {
         <PageLoader label={a.loading} />
       ) : error && events.length === 0 ? (
         <PanelEmpty description={error} icon="warning" title={a.loadFailed} />
-      ) : events.length === 0 ? (
-        <PanelEmpty
-          action={
-            <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
-              {a.newEvent}
-            </Button>
-          }
-          description={a.emptyDesc}
-          icon="calendar"
-          title={a.emptyTitle}
-        />
       ) : (
         <>
           <PanelHeader
@@ -350,6 +346,17 @@ export function AgendaView({ onClose }: AgendaViewProps) {
                 onConfirm={() => void handleConfirm(selected)}
                 onDismiss={() => void handleDismiss(selected)}
                 onEdit={() => setEditor({ event: selected, mode: 'edit' })}
+              />
+            ) : events.length === 0 ? (
+              <PanelEmpty
+                action={
+                  <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
+                    {a.newEvent}
+                  </Button>
+                }
+                description={a.emptyDesc}
+                icon="calendar"
+                title={a.emptyTitle}
               />
             ) : (
               <PanelEmpty description={a.emptyDesc} icon="calendar" />
