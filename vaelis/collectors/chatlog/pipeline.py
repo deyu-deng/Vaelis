@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # day and share this much of their keyword set.
 _MATCH_KEYWORDS = ("组会", "例会", "会议", "开会", "答辩", "面试", "课", "培训", "宣讲", "聚餐")
 
+# The review-complete kick and POST /api/collect/sweep sweep this many days
+# (today included); the routine watchdog sweep stays at 1.
+DEFAULT_LOOKBACK_DAYS = 3
+
 
 @dataclass
 class IngestReport:
@@ -198,8 +202,12 @@ class ChatlogPipeline:
 
     # --- batch --------------------------------------------------------------
 
-    def run_once(self, day: Optional[date] = None) -> IngestReport:
-        """Sweep conversations for one day. Safe to call repeatedly.
+    def run_once(self, day: Optional[date] = None, lookback_days: int = 1) -> IngestReport:
+        """Sweep conversations for one day, or for a lookback window.
+
+        ``lookback_days=3`` sweeps three days ending today (or ending at
+        ``day`` when one is given), oldest first; the default ``1`` keeps the
+        exact single-day behaviour the 10-minute watchdog relies on.
 
         Mode drives which talkers are swept:
           * blacklist — enumerate every conversation (``/api/v1/session``),
@@ -263,16 +271,32 @@ class ChatlogPipeline:
                 return report
             talkers = self.config.talkers
 
-        for talker in talkers:
-            try:
-                messages = self.client.fetch(talker, day)
-            except ChatlogUnavailable as exc:
-                # Service down or WeChat logged out — surface once, keep going.
-                logger.warning("chatlog fetch failed for %s: %s", talker, exc)
-                continue
+        # Lookback window: ``lookback_days`` days ending today (or ending at
+        # ``day``), oldest first. The default single-day sweep passes ``day``
+        # through untouched so the routine watchdog behaves exactly as before.
+        lookback_days = max(1, int(lookback_days))
+        if lookback_days > 1:
+            anchor = day or datetime.now().date()
+            days: list[Optional[date]] = [
+                anchor - timedelta(days=offset)
+                for offset in range(lookback_days - 1, -1, -1)
+            ]
+        else:
+            days = [day]
 
-            for message in messages:
-                self.handle_message(message, report)
+        for talker in talkers:
+            for sweep_day in days:
+                try:
+                    messages = self.client.fetch(talker, sweep_day)
+                except ChatlogUnavailable as exc:
+                    # Service down or WeChat logged out — surface once, keep going.
+                    logger.warning(
+                        "chatlog fetch failed for %s (%s): %s", talker, sweep_day, exc
+                    )
+                    continue
+
+                for message in messages:
+                    self.handle_message(message, report)
 
         return report
 
@@ -360,5 +384,18 @@ def refresh_agenda(
         raise ChatlogDead("chatlog 未启动或 /health 失败，采集不通")
     report = pipe.run_once()
     summary = agenda_window_summary(pipe.service, now=now)
+    # One-shot widening (WP-M1-COLLECT-CLOSE): after the first-run review,
+    # an empty today+tomorrow board gets a single 3-day lookback sweep before
+    # L1 reports an honest zero. Boards that already show events — and
+    # states where the review has not completed — are left alone so a
+    # routine ask never pays 3 days × all known talkers.
+    if (
+        pipe.talkers.review_done()
+        and not summary["today_events"]
+        and not summary["tomorrow_events"]
+    ):
+        report = pipe.run_once(lookback_days=DEFAULT_LOOKBACK_DAYS)
+        summary = agenda_window_summary(pipe.service, now=now)
+        summary["lookback_widened"] = True
     summary["ingest"] = report.as_dict()
     return report, summary

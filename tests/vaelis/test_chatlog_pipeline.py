@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -10,7 +10,11 @@ from vaelis.agenda.service import AgendaService
 from vaelis.collectors.chatlog.client import ChatlogClient, ChatMessage, normalize_message
 from vaelis.collectors.chatlog.config import CollectorConfig
 from vaelis.collectors.chatlog.confirm import HeuristicConfirmer
-from vaelis.collectors.chatlog.pipeline import ChatlogPipeline, IngestReport
+from vaelis.collectors.chatlog.pipeline import (
+    ChatlogPipeline,
+    IngestReport,
+    refresh_agenda,
+)
 from vaelis.collectors.chatlog.state import SeenStore, TalkerStore
 
 NOW = datetime(2026, 8, 25, 10, 0)
@@ -351,6 +355,103 @@ def test_blacklist_mode_gated_until_review_completes(tmp_path):
     assert report.review_gated == 2
     assert client.calls == []
     assert pipeline.service.list_pending() == []
+
+
+# --------------------------------------------------------------------------
+# WP-M1-COLLECT-CLOSE: lookback sweeps (review-complete kick + sweep endpoint)
+# --------------------------------------------------------------------------
+
+
+def test_run_once_lookback_fetches_each_day_and_dedupes(tmp_path):
+    """lookback=3 = today included, three days, oldest first — and the same
+    msg_id delivered by every day's window must land only once."""
+    client = FakeClient({"班级群": [message("明天下午三点开组会", msg_id="a1")]})
+    pipeline = blacklist_pipeline(tmp_path, client=client, known=["班级群"])
+
+    report = pipeline.run_once(lookback_days=3)
+
+    days = [day for (_talker, day) in client.calls]
+    assert len(days) == 3
+    assert all(day is not None for day in days)
+    assert len(set(days)) == 3
+    assert days == sorted(days), "oldest day first"
+    # Dedupe ledger keeps the repeated message to a single agenda entry.
+    assert len(report.created) == 1
+    assert report.skipped_duplicate == 2
+
+
+def test_run_once_default_lookback_keeps_single_day(tmp_path):
+    """The 10-minute watchdog path is untouched: day=None passes through."""
+    client = FakeClient({"班级群": [message("明天下午三点开组会", msg_id="a1")]})
+    pipeline = blacklist_pipeline(tmp_path, client=client, known=["班级群"])
+
+    pipeline.run_once()
+
+    assert [day for (_talker, day) in client.calls] == [None]
+
+
+def test_run_once_lookback_honours_explicit_day_anchor(tmp_path):
+    client = FakeClient({"班级群": []})
+    pipeline = blacklist_pipeline(tmp_path, client=client, known=["班级群"])
+
+    anchor = date(2026, 9, 10)
+    pipeline.run_once(anchor, lookback_days=3)
+
+    assert [day for (_talker, day) in client.calls] == [
+        date(2026, 9, 8),
+        date(2026, 9, 9),
+        date(2026, 9, 10),
+    ]
+
+
+# --------------------------------------------------------------------------
+# WP-M1-COLLECT-CLOSE: refresh_agenda widens only an empty reviewed board
+# --------------------------------------------------------------------------
+
+
+def test_refresh_agenda_widens_lookback_when_board_is_empty(tmp_path):
+    """Reviewed + today/tomorrow both empty → one extra 3-day sweep; chatter
+    already seen in the first sweep is deduped, not double-counted."""
+    client = FakeClient({"班级群": [message("好的收到", msg_id="c1")]})
+    pipeline = blacklist_pipeline(tmp_path, client=client, known=["班级群"])
+
+    report, summary = refresh_agenda(pipeline=pipeline)
+
+    assert len(client.calls) == 4  # 1-day routine sweep + 3-day widened sweep
+    assert summary.get("lookback_widened") is True
+    assert report.scanned == 3
+    # The chatter seen in the routine sweep comes back in all 3 widened
+    # fetches — deduped every time, never re-ingested.
+    assert report.skipped_duplicate == 3
+    assert summary["events"] == []  # honest zero, nothing invented
+
+
+def test_refresh_agenda_does_not_widen_when_board_has_events(tmp_path):
+    client = FakeClient({"班级群": []})
+    pipeline = blacklist_pipeline(tmp_path, client=client, known=["班级群"])
+    tomorrow = (datetime.now() + timedelta(days=1)).date().isoformat()
+    pipeline.service.create_manual(
+        title="组会", start_at=f"{tomorrow}T15:00:00", kind="meeting"
+    )
+
+    _report, summary = refresh_agenda(pipeline=pipeline)
+
+    assert len(client.calls) == 1, "non-empty board pays only the routine sweep"
+    assert not summary.get("lookback_widened", False)
+    assert [event["title"] for event in summary["events"]] == ["组会"]
+
+
+def test_refresh_agenda_does_not_widen_before_review(tmp_path):
+    client = FakeClient({"班级群": []})
+    pipeline = blacklist_pipeline(
+        tmp_path, client=client, known=["班级群"], review_done=False
+    )
+
+    report, summary = refresh_agenda(pipeline=pipeline)
+
+    assert report.review_gated == 1
+    assert client.calls == [], "gated: no fetch at all, and no widening"
+    assert not summary.get("lookback_widened", False)
 
 
 def test_blacklist_mode_no_talkers_when_enum_empty(tmp_path):
