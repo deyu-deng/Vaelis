@@ -207,6 +207,33 @@ describe('TalkerCollection sections + official bulk exclude (R-021)', () => {
     expect(screen.getByText('Marvis马维斯')).toBeTruthy()
   })
 
+  it('folds a section away on header click without touching the others', async () => {
+    $talkerState.set({
+      reviewComplete: true,
+      talkers: [
+        { id: 'wxid_me', name: '嘎嘎', status: 'pending' },
+        { id: '54302638261@chatroom', name: '拓扑群', status: 'pending' }
+      ]
+    })
+
+    getTalkerCollection.mockResolvedValue($talkerState.get())
+
+    render(<TalkerCollection onClose={() => {}} />)
+
+    const header = await screen.findByRole('button', { name: /Direct chats/i })
+
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('嘎嘎')).toBeTruthy()
+
+    header.click()
+
+    await waitFor(() => {
+      expect(screen.queryByText('嘎嘎')).toBeNull()
+    })
+    // Collapsing direct chats leaves the groups section alone.
+    expect(screen.getByText('拓扑群')).toBeTruthy()
+  })
+
   it('excludes only the pending official accounts, never decided ones', async () => {
     $talkerState.set({
       reviewComplete: false,

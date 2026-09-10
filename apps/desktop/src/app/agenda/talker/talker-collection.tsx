@@ -19,6 +19,7 @@ import { useEffect, useState } from 'react'
 import { PanelAction, PanelEmpty, PanelPill, type PanelPillTone, PanelSectionLabel } from '@/app/overlays/panel'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 
 import type { TalkerState, TalkerStatus } from './api'
@@ -134,6 +135,10 @@ function TalkerSections({
   talkers: TalkerState[]
 }) {
   const buckets = talkersByKind(talkers)
+  // R-021 follow-up: every section folds away, and an open section is height-
+  // capped with its own scroll — a 300-conversation backlog no longer turns the
+  // dialog into one giant page scroll.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const KIND_LABEL: Record<TalkerKind, string> = {
     direct: labels.sectionDirect,
     group: labels.sectionGroups,
@@ -145,29 +150,49 @@ function TalkerSections({
       {KIND_ORDER.filter(kind => buckets[kind].length > 0).map(kind => {
         const pendingOfficial =
           kind === 'official' ? buckets.official.filter(talker => talker.status === 'pending') : []
+        const open = !collapsed[kind]
 
         return (
           <div className="space-y-1" key={kind}>
-            <div className="flex items-center justify-between gap-2">
-              <PanelSectionLabel className="px-1">{KIND_LABEL[kind]}</PanelSectionLabel>
+            <div className="flex items-center gap-1">
+              <button
+                aria-expanded={open}
+                className="flex min-h-6 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-accent"
+                onClick={() => setCollapsed(prev => ({ ...prev, [kind]: !prev[kind] }))}
+                type="button"
+              >
+                <Codicon
+                  className="shrink-0 text-muted-foreground"
+                  name={open ? 'chevron-down' : 'chevron-right'}
+                  size="0.75rem"
+                />
+                <span className="min-w-0 flex-1 truncate text-[0.6rem] font-medium uppercase tracking-wider text-muted-foreground/50">
+                  {KIND_LABEL[kind]}
+                </span>
+                <span className="shrink-0 text-[0.65rem] tabular-nums text-muted-foreground/70">
+                  {buckets[kind].length}
+                </span>
+              </button>
               {pendingOfficial.length > 0 ? (
                 <Button disabled={busy} onClick={onExcludeAllOfficial} size="xs" variant="ghost">
                   {labels.excludeAllPendingOfficial}
                 </Button>
               ) : null}
             </div>
-            <div className="space-y-0.5">
-              {buckets[kind].map(talker => (
-                <TalkerRow
-                  busy={busyId === talker.id}
-                  key={talker.id}
-                  name={talker.name}
-                  onCollect={() => onAct(talker.id, 'collect')}
-                  onExclude={() => onAct(talker.id, 'exclude')}
-                  status={talker.status}
-                />
-              ))}
-            </div>
+            {open ? (
+              <div className="max-h-64 space-y-0.5 overflow-y-auto pr-0.5">
+                {buckets[kind].map(talker => (
+                  <TalkerRow
+                    busy={busyId === talker.id}
+                    key={talker.id}
+                    name={talker.name}
+                    onCollect={() => onAct(talker.id, 'collect')}
+                    onExclude={() => onAct(talker.id, 'exclude')}
+                    status={talker.status}
+                  />
+                ))}
+              </div>
+            ) : null}
           </div>
         )
       })}
