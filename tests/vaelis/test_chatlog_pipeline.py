@@ -7,7 +7,7 @@ from datetime import date, datetime
 import pytest
 
 from vaelis.agenda.service import AgendaService
-from vaelis.collectors.chatlog.client import ChatMessage, normalize_message
+from vaelis.collectors.chatlog.client import ChatlogClient, ChatMessage, normalize_message
 from vaelis.collectors.chatlog.config import CollectorConfig
 from vaelis.collectors.chatlog.confirm import HeuristicConfirmer
 from vaelis.collectors.chatlog.pipeline import ChatlogPipeline, IngestReport
@@ -434,3 +434,36 @@ def test_seen_store_prunes_old_rows(tmp_path):
     assert store.mark_seen("x") is False
     assert store.prune(retention_days=0) == 1
     assert store.already_seen("x") is False
+
+
+def test_list_talker_sessions_carries_the_chatlog_display_name(monkeypatch):
+    """The board shows real group/contact names — chatlog's `topicName`.
+
+    `list_talkers` (ids only) stays intact for the blacklist sweep; the new
+    `list_talker_sessions` is what the collection API reads names from. A
+    conversation with no label falls back to its id so no row is blank.
+    """
+    client = ChatlogClient("http://127.0.0.1:5030")
+
+    def fake_get(path: str, params: dict[str, str]) -> object:
+        assert path == "/api/v1/session"
+        return {
+            "items": [
+                {"isChatroom": True, "topicId": "123@chatroom", "topicName": "拓扑测试群"},
+                {"isChatroom": False, "personID": "wxid_abc", "topicName": ""},
+                # Duplicate id later in the list is dropped.
+                {"isChatroom": True, "topicId": "123@chatroom", "topicName": "重复"},
+                "not a dict",
+            ]
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    sessions = client.list_talker_sessions()
+
+    assert [(session.id, session.name) for session in sessions] == [
+        ("123@chatroom", "拓扑测试群"),
+        ("wxid_abc", "wxid_abc"),
+    ]
+    # ids-only view unchanged for blacklist / full-collection sweeps.
+    assert client.list_talkers() == ["123@chatroom", "wxid_abc"]

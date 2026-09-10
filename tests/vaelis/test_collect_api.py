@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from vaelis.agenda.service import AgendaService
 from vaelis.collectors.chatlog import collect_api, webhook as webhook_module
+from vaelis.collectors.chatlog.client import TalkerSession
 from vaelis.collectors.chatlog.config import CollectorConfig
 from vaelis.collectors.chatlog.confirm import HeuristicConfirmer
 from vaelis.collectors.chatlog.pipeline import ChatlogPipeline
@@ -17,13 +18,27 @@ from vaelis.collectors.chatlog.state import SeenStore, TalkerStore
 
 NOW = datetime(2026, 8, 25, 10, 0)
 
+# Raw talker ids vs the display name chatlog would report for them.
+DEFAULT_NAMES = {
+    "班级群": "ZJU 2502 班",
+    "项目群": "项目协作群",
+}
+
 
 class StubClient:
-    def __init__(self, sessions: list[str]):
+    def __init__(self, sessions: list[str], names: dict[str, str] | None = None):
         self.sessions = sessions
+        self.names = names or {}
 
     def fetch(self, talker, day=None):
         return []
+
+    def list_talker_sessions(self, keyword: str = "", limit: int = 10000) -> list[TalkerSession]:
+        return [
+            TalkerSession(id=talker, name=self.names.get(talker, talker))
+            for talker in self.sessions
+            if keyword in talker
+        ]
 
     def list_talkers(self, keyword: str = "", limit: int = 10000) -> list[str]:
         return [t for t in self.sessions if keyword in t]
@@ -36,7 +51,7 @@ class StubClient:
 def client(tmp_path):
     pipeline = ChatlogPipeline(
         config=CollectorConfig(mode="blacklist", enabled=True),
-        client=StubClient(["班级群", "项目群", "广告群"]),
+        client=StubClient(["班级群", "项目群", "广告群"], names=DEFAULT_NAMES),
         service=AgendaService(tmp_path / "agenda.db"),
         seen=SeenStore(tmp_path / "seen.db"),
         talkers=TalkerStore(tmp_path / "talkers.db"),
@@ -66,6 +81,18 @@ def test_list_starts_unreviewed_with_all_candidates_pending(client):
     by_id = {row["id"]: row["status"] for row in body["talkers"]}
     assert by_id == {"班级群": "pending", "项目群": "pending", "广告群": "pending"}
     assert client.pipeline.talkers.pending() == set()
+
+
+def test_list_surfaces_chatlog_display_names(client):
+    body = client.get("/api/collect/talkers").json()
+
+    names = {row["id"]: row["name"] for row in body["talkers"]}
+    # The board renders `name`; chatlog's topicName must reach it instead of
+    # the raw @chatroom / wxid id.
+    assert names["班级群"] == "ZJU 2502 班"
+    assert names["项目群"] == "项目协作群"
+    # No chatlog label -> id fallback, so a row can never be blank.
+    assert names["广告群"] == "广告群"
 
 
 def test_one_click_collect_marks_known(client):

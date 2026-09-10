@@ -75,15 +75,17 @@ async def list_talkers():
     store = pipeline.talkers
     # Enumerate what chatlog actually has so the review covers every active
     # session; unknown entries surface as pending for a one-click decision.
+    # `list_talker_sessions` also carries the chatlog display name (topicName)
+    # so the board shows the real group/contact name, not the raw @chatroom id.
     try:
-        candidates = await run_in_threadpool(pipeline.client.list_talkers)
+        sessions = await run_in_threadpool(pipeline.client.list_talker_sessions)
     except Exception as exc:  # pragma: no cover - network seam
         logger.warning("collect: session enumeration failed: %s", exc)
-        candidates = []
+        sessions = []
 
     talkers = [
-        {"id": talker, "name": talker, "status": _status_for(talker)}
-        for talker in candidates
+        {"id": session.id, "name": session.name or session.id, "status": _status_for(session.id)}
+        for session in sessions
     ]
     return {
         "reviewComplete": store.review_done(),

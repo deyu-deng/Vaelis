@@ -39,6 +39,20 @@ class ChatMessage:
         return not self.content.strip()
 
 
+@dataclass(frozen=True)
+class TalkerSession:
+    """One conversation as chatlog's session list reports it.
+
+    ``id`` is the talker id accepted by ``/api/v1/chatlog`` (``topicId`` /
+    ``personID``); ``name`` is the human-readable label chatlog already
+    carries (``topicName`` — group name or contact display name). It is the
+    id when chatlog has no better label, so callers can render it verbatim.
+    """
+
+    id: str
+    name: str
+
+
 def _stable_id(talker: str, sent_at: str, content: str) -> str:
     digest = hashlib.sha1(f"{talker}|{sent_at}|{content}".encode("utf-8")).hexdigest()
     return f"cl_{digest[:16]}"
@@ -141,12 +155,14 @@ class ChatlogClient:
                 messages.append(message)
         return messages
 
-    def list_talkers(self, keyword: str = "", limit: int = 10000) -> list[str]:
-        """Enumerate conversation identifiers for blacklist / full collection.
+    def list_talker_sessions(self, keyword: str = "", limit: int = 10000) -> list[TalkerSession]:
+        """Enumerate conversations with their display names.
 
         chatlog exposes ``/api/v1/session`` which returns recent conversations;
         each item's ``topicId`` (or ``personID``) is the talker id accepted by
-        ``/api/v1/chatlog``. Returns de-duplicated talker ids (order preserved).
+        ``/api/v1/chatlog``, and ``topicName`` is the human-readable label
+        (group name / contact display name). Older builds used ``UserName`` /
+        ``nickName`` — accept either. Order is preserved (most recent first).
         """
         try:
             payload = self._get(
@@ -161,7 +177,7 @@ class ChatlogClient:
             return []
 
         seen: set[str] = set()
-        result: list[str] = []
+        result: list[TalkerSession] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -178,5 +194,20 @@ class ChatlogClient:
             if not uname or uname in seen:
                 continue
             seen.add(uname)
-            result.append(str(uname))
+            talker_id = str(uname)
+            # Real display name from chatlog, falling back to the id so the
+            # board never renders a blank row.
+            label = (
+                item.get("topicName")
+                or item.get("remark")
+                or item.get("nickName")
+                or item.get("nickname")
+                or talker_id
+            )
+            name = str(label).strip() or talker_id
+            result.append(TalkerSession(id=talker_id, name=name))
         return result
+
+    def list_talkers(self, keyword: str = "", limit: int = 10000) -> list[str]:
+        """De-duplicated talker ids (order preserved). See ``list_talker_sessions``."""
+        return [session.id for session in self.list_talker_sessions(keyword, limit)]
