@@ -2,7 +2,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $talkerError, $talkerLoading, $talkerState } from './store'
-import { TalkerCollection, talkerKind } from './talker-collection'
+import { TalkerCollection } from './talker-collection'
+import { talkerKind } from './talker-kind'
 
 const getTalkerCollection = vi.hoisted(() => vi.fn())
 const setTalkerMode = vi.hoisted(() => vi.fn())

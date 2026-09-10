@@ -33,32 +33,7 @@ import {
   finishReview,
   refreshTalkerCollection
 } from './store'
-
-/**
- * R-021 (裁定 23): the collection list is split 私聊 / 群聊 / 公众号 because the
- * user applies different collection policies to each. chatlog's session payload
- * carries no type field, so we classify from the talker id convention:
- * `…@chatroom` = group, `gh_…` = official account, everything else (wxid_,
- * filehelper, …) = direct chat. Pure + exported so the mapping is unit-tested.
- */
-export type TalkerKind = 'direct' | 'group' | 'official'
-
-export function talkerKind(id: string): TalkerKind {
-  const value = (id ?? '').trim()
-
-  if (value.endsWith('@chatroom')) {
-    return 'group'
-  }
-
-  if (value.startsWith('gh_')) {
-    return 'official'
-  }
-
-  return 'direct'
-}
-
-/** Render order of the three sections. */
-const KIND_ORDER: readonly TalkerKind[] = ['direct', 'group', 'official']
+import { KIND_ORDER, type TalkerKind, talkerKind } from './talker-kind'
 
 const MODE_TONE: Record<TalkerStatus, PanelPillTone> = {
   excluded: 'bad',
