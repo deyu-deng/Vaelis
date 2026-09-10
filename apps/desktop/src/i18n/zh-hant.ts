@@ -1339,7 +1339,11 @@ export const zhHant = defineLocale({
       modeKnown: '採集中',
       modeExcluded: '已排除',
       loadFailed: '無法載入採集狀態。',
-      retry: '重試'
+      retry: '重試',
+      sectionDirect: '私聊',
+      sectionGroups: '群聊',
+      sectionOfficial: '公眾號',
+      excludeAllPendingOfficial: '排除全部待定公眾號'
     }
   },
   console: {

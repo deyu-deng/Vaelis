@@ -1201,6 +1201,11 @@ export interface Translations {
       modeExcluded: string
       loadFailed: string
       retry: string
+      /** R-021 (裁定 23): review list split 私聊 / 群聊 / 公众号. */
+      sectionDirect: string
+      sectionGroups: string
+      sectionOfficial: string
+      excludeAllPendingOfficial: string
     }
   }
   console: {

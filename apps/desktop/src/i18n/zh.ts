@@ -1618,7 +1618,11 @@ export const zh: Translations = {
       modeKnown: '采集中',
       modeExcluded: '已排除',
       loadFailed: '无法加载采集状态。',
-      retry: '重试'
+      retry: '重试',
+      sectionDirect: '私聊',
+      sectionGroups: '群聊',
+      sectionOfficial: '公众号',
+      excludeAllPendingOfficial: '排除全部待定公众号'
     }
   },
   console: {

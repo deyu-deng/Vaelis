@@ -9,7 +9,7 @@
 
 import { atom } from 'nanostores'
 
-import { completeReview, getTalkerCollection, setTalkerMode } from './api'
+import { bulkSetTalkerMode, completeReview, getTalkerCollection, setTalkerMode } from './api'
 import type { TalkerCollection } from './api'
 
 export const $talkerState = atom<null | TalkerCollection>(null)
@@ -42,6 +42,15 @@ export function collectTalker(id: string): Promise<void> {
 
 export function excludeTalker(id: string): Promise<void> {
   return withRefresh(() => setTalkerMode(id, 'exclude'))
+}
+
+/** One bulk call for many excludes — same endpoint, single refresh. */
+export function excludeTalkers(ids: string[]): Promise<void> {
+  if (ids.length === 0) {
+    return Promise.resolve()
+  }
+
+  return withRefresh(() => bulkSetTalkerMode(ids, 'excluded'))
 }
 
 export function finishReview(): Promise<void> {

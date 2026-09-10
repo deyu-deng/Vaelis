@@ -21,16 +21,43 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 
-import type { TalkerStatus } from './api'
+import type { TalkerState, TalkerStatus } from './api'
 import {
   $talkerError,
   $talkerLoading,
   $talkerState,
   collectTalker,
   excludeTalker,
+  excludeTalkers,
   finishReview,
   refreshTalkerCollection
 } from './store'
+
+/**
+ * R-021 (裁定 23): the collection list is split 私聊 / 群聊 / 公众号 because the
+ * user applies different collection policies to each. chatlog's session payload
+ * carries no type field, so we classify from the talker id convention:
+ * `…@chatroom` = group, `gh_…` = official account, everything else (wxid_,
+ * filehelper, …) = direct chat. Pure + exported so the mapping is unit-tested.
+ */
+export type TalkerKind = 'direct' | 'group' | 'official'
+
+export function talkerKind(id: string): TalkerKind {
+  const value = (id ?? '').trim()
+
+  if (value.endsWith('@chatroom')) {
+    return 'group'
+  }
+
+  if (value.startsWith('gh_')) {
+    return 'official'
+  }
+
+  return 'direct'
+}
+
+/** Render order of the three sections. */
+const KIND_ORDER: readonly TalkerKind[] = ['direct', 'group', 'official']
 
 const MODE_TONE: Record<TalkerStatus, PanelPillTone> = {
   excluded: 'bad',
@@ -66,6 +93,84 @@ function TalkerRow({
       <PanelAction disabled={busy} icon="discard" onClick={onExclude}>
         {c.exclude}
       </PanelAction>
+    </div>
+  )
+}
+
+function talkersByKind(talkers: TalkerState[]): Record<TalkerKind, TalkerState[]> {
+  const buckets: Record<TalkerKind, TalkerState[]> = { direct: [], group: [], official: [] }
+
+  for (const talker of talkers) {
+    buckets[talkerKind(talker.id)].push(talker)
+  }
+
+  return buckets
+}
+
+/**
+ * R-021: the review list, split into 私聊 / 群聊 / 公众号. Empty sections are
+ * omitted so a fresh install (no groups yet) stays quiet. The official section
+ * gets a "排除全部待定公众号" shortcut — it only ever targets `pending` ids, so
+ * what the user already collected/excluded is never rewritten.
+ */
+function TalkerSections({
+  busy,
+  busyId,
+  labels,
+  onAct,
+  onExcludeAllOfficial,
+  talkers
+}: {
+  busy: boolean
+  busyId: null | string
+  labels: {
+    excludeAllPendingOfficial: string
+    sectionDirect: string
+    sectionGroups: string
+    sectionOfficial: string
+  }
+  onAct: (id: string, mode: 'collect' | 'exclude') => void
+  onExcludeAllOfficial: () => void
+  talkers: TalkerState[]
+}) {
+  const buckets = talkersByKind(talkers)
+  const KIND_LABEL: Record<TalkerKind, string> = {
+    direct: labels.sectionDirect,
+    group: labels.sectionGroups,
+    official: labels.sectionOfficial
+  }
+
+  return (
+    <div className="space-y-3">
+      {KIND_ORDER.filter(kind => buckets[kind].length > 0).map(kind => {
+        const pendingOfficial =
+          kind === 'official' ? buckets.official.filter(talker => talker.status === 'pending') : []
+
+        return (
+          <div className="space-y-1" key={kind}>
+            <div className="flex items-center justify-between gap-2">
+              <PanelSectionLabel className="px-1">{KIND_LABEL[kind]}</PanelSectionLabel>
+              {pendingOfficial.length > 0 ? (
+                <Button disabled={busy} onClick={onExcludeAllOfficial} size="xs" variant="ghost">
+                  {labels.excludeAllPendingOfficial}
+                </Button>
+              ) : null}
+            </div>
+            <div className="space-y-0.5">
+              {buckets[kind].map(talker => (
+                <TalkerRow
+                  busy={busyId === talker.id}
+                  key={talker.id}
+                  name={talker.name}
+                  onCollect={() => onAct(talker.id, 'collect')}
+                  onExclude={() => onAct(talker.id, 'exclude')}
+                  status={talker.status}
+                />
+              ))}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -117,18 +222,14 @@ export function TalkerCollection({ onClose }: { onClose: () => void }) {
         />
 
         <PanelSectionLabel className="px-1">{c.backlogTitle}</PanelSectionLabel>
-        <div className="space-y-0.5">
-          {state.talkers.map(talker => (
-            <TalkerRow
-              busy={busyId === talker.id}
-              key={talker.id}
-              name={talker.name}
-              onCollect={() => void act(talker.id, 'collect')}
-              onExclude={() => void act(talker.id, 'exclude')}
-              status={talker.status}
-            />
-          ))}
-        </div>
+        <TalkerSections
+          busy={busyId !== null}
+          busyId={busyId}
+          labels={c}
+          onAct={(id, mode) => void act(id, mode)}
+          onExcludeAllOfficial={() => void actExcludeAllOfficial()}
+          talkers={state.talkers}
+        />
 
         <div className="flex justify-end pt-1">
           <Button disabled={busyId !== null} onClick={() => void actFinish()} size="sm">
@@ -157,20 +258,35 @@ export function TalkerCollection({ onClose }: { onClose: () => void }) {
   return (
     <div className="space-y-3">
       <PanelSectionLabel className="px-1">{c.pendingTitle}</PanelSectionLabel>
-      <div className="space-y-0.5">
-        {pending.map(talker => (
-          <TalkerRow
-            busy={busyId === talker.id}
-            key={talker.id}
-            name={talker.name}
-            onCollect={() => void act(talker.id, 'collect')}
-            onExclude={() => void act(talker.id, 'exclude')}
-            status={talker.status}
-          />
-        ))}
-      </div>
+      <TalkerSections
+        busy={busyId !== null}
+        busyId={busyId}
+        labels={c}
+        onAct={(id, mode) => void act(id, mode)}
+        onExcludeAllOfficial={() => void actExcludeAllOfficial()}
+        talkers={pending}
+      />
     </div>
   )
+
+  async function actExcludeAllOfficial() {
+    // Only undecided official accounts — anything already known/excluded stays.
+    const ids = (state?.talkers ?? [])
+      .filter(talker => talker.status === 'pending' && talkerKind(talker.id) === 'official')
+      .map(talker => talker.id)
+
+    if (ids.length === 0) {
+      return
+    }
+
+    setBusyId('__official__')
+
+    try {
+      await excludeTalkers(ids)
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   async function act(id: string, mode: 'collect' | 'exclude') {
     setBusyId(id)

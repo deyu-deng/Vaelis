@@ -1384,7 +1384,11 @@ export const ja = defineLocale({
       modeKnown: '収集中',
       modeExcluded: '除外済み',
       loadFailed: '収集状態を読み込めませんでした。',
-      retry: '再試行'
+      retry: '再試行',
+      sectionDirect: 'ダイレクト',
+      sectionGroups: 'グループ',
+      sectionOfficial: '公式アカウント',
+      excludeAllPendingOfficial: '未定の公式アカウントをすべて除外'
     }
   },
   console: {

@@ -41,6 +41,22 @@ export async function setTalkerMode(id: string, mode: TalkerMode): Promise<void>
   })
 }
 
+/**
+ * Batch decision over the EXISTING `/api/collect/talkers/bulk` endpoint (no new
+ * REST surface) — used by "exclude all pending official accounts". `pending`
+ * is not a legal decision (fail-closed default), hence the narrowed status.
+ */
+export async function bulkSetTalkerMode(
+  ids: string[],
+  status: Extract<TalkerStatus, 'excluded' | 'known'>
+): Promise<void> {
+  await window.hermesDesktop.api<{ status: TalkerStatus; updated: number }>({
+    path: '/api/collect/talkers/bulk',
+    method: 'POST',
+    body: { status, talkers: ids }
+  })
+}
+
 export async function completeReview(): Promise<void> {
   await window.hermesDesktop.api<{ reviewComplete: boolean }>({
     path: '/api/collect/review-complete',

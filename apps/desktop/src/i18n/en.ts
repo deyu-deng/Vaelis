@@ -1441,7 +1441,11 @@ export const en: Translations = {
       modeKnown: 'collecting',
       modeExcluded: 'excluded',
       loadFailed: 'Could not load collection status.',
-      retry: 'Retry'
+      retry: 'Retry',
+      sectionDirect: 'Direct chats',
+      sectionGroups: 'Groups',
+      sectionOfficial: 'Official accounts',
+      excludeAllPendingOfficial: 'Exclude all pending official accounts'
     }
   },
   console: {
