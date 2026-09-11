@@ -15,6 +15,25 @@ import {
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('shows the pre-rewrite sentence for a hard-routed user turn (WP-UI-NO-INTERNALS)', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          '明天的日常安排是什么\n\n[§8.2 硬路由 · 本回合强制] 上面这句话命中总秘书冻结话术，必须严格按序执行：\n1. 第一动作只能是调用工具',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('明天的日常安排是什么')
+  })
+
+  it('leaves an ordinary user turn untouched', () => {
+    const [message] = toChatMessages([{ role: 'user', content: '明天几点开会？', timestamp: 1 }])
+
+    expect(chatMessageText(message)).toBe('明天几点开会？')
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },

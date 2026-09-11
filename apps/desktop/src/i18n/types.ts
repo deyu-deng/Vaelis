@@ -2144,6 +2144,8 @@ export interface Translations {
       statusError: string
       statusRecovered: string
       statusDone: string
+      /** WP-UI-NO-INTERNALS: one-line label for a failed tool row. */
+      failedShort: string
       actions: {
         read: string
         reading: string

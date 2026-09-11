@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import type { Agent, AgentStatus } from '@/app/console/types'
+import { secretaryShortName } from '@/app/desktop-controller-utils'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { cn } from '@/lib/utils'
@@ -92,6 +93,9 @@ export function AgentCategoryGroup({
               ? []
               : (sessionsByProfile.get((agent.profile ?? '').trim()) ?? [])
             const sessionsOpen = !hideSessions && openAgentId === agent.id
+            // WP-UI-NO-INTERNALS: the rail shows the short label (「日程秘书」),
+            // never a profile id like `l2-agenda`; the raw id lives in `title`.
+            const shortName = secretaryShortName(agent.id, agent.name)
 
             return (
               <div key={agent.id}>
@@ -104,19 +108,20 @@ export function AgentCategoryGroup({
                   <button
                     className={cn(AGENT_ROW, 'min-w-0 flex-1', activeAgentId === agent.id && AGENT_ROW_ACTIVE)}
                     onClick={() => onNavigateAgent(agent.id)}
+                    title={agent.id}
                     type="button"
                   >
                     <span
                       aria-hidden="true"
                       className={cn('size-2 shrink-0 rounded-full', CATEGORY_STATUS_DOT[agent.status])}
                     />
-                    <span className="min-w-0 flex-1 truncate">{agent.name}</span>
+                    <span className="min-w-0 flex-1 truncate">{shortName}</span>
                   </button>
 
                   {agentSessions.length > 0 && (
                     <button
                       aria-expanded={sessionsOpen}
-                      aria-label={sessionsOpen ? undefined : `${agent.name}: ${agentSessions.length}`}
+                      aria-label={sessionsOpen ? undefined : `${shortName}: ${agentSessions.length}`}
                       className={cn(
                         'flex size-7 shrink-0 items-center justify-center rounded-md text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
                         activeAgentId === agent.id && 'text-foreground'

@@ -10,8 +10,25 @@ import {
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
+  sessionTitle,
   toBranchableMessageRepository
 } from './chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
+
+describe('sessionTitle (WP-UI-NO-INTERNALS)', () => {
+  const session = (title: null | string, preview: null | string = null) => ({ preview, title }) as SessionInfo
+
+  it('strips an injected hard-route directive from rail/pinned/palette titles', () => {
+    const routed = '明天的日常安排是什么\n\n[§8.2 硬路由 · 本回合强制] 上面这句话命中总秘书冻结话术'
+
+    expect(sessionTitle(session(routed))).toBe('明天的日常安排是什么')
+  })
+
+  it('keeps ordinary titles and falls back to preview', () => {
+    expect(sessionTitle(session('明天几点开会？'))).toBe('明天几点开会？')
+    expect(sessionTitle(session(null, '项目周会'))).toBe('项目周会')
+  })
+})
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 

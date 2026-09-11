@@ -6,10 +6,34 @@ import {
   buildToolView,
   clampForDisplay,
   countDiffLineStats,
+  failureRowLabel,
   inlineDiffFromResult,
   MAX_TOOL_RENDER_CHARS,
   type ToolPart
 } from './fallback-model'
+
+describe('failureRowLabel (WP-UI-NO-INTERNALS)', () => {
+  const view = { subtitle: 'curl 127.0.0.1:5030/health', title: 'Searched files' }
+
+  it('collapses a failed row to the one-line label and hides the internals', () => {
+    const head = failureRowLabel('error', view, 'Tool did not succeed')
+
+    expect(head.title).toBe('Tool did not succeed')
+    expect(head.subtitle).toBe('')
+    // The raw command/error is still reachable through the tooltip.
+    expect(head.tooltip).toBe('Searched files · curl 127.0.0.1:5030/health')
+  })
+
+  it('passes success rows through untouched (C3 dispatch card stays)', () => {
+    const head = failureRowLabel('success', view, 'Tool did not succeed')
+
+    expect(head).toEqual({ subtitle: view.subtitle, title: view.title, tooltip: '' })
+  })
+
+  it('keeps a warning row as-is', () => {
+    expect(failureRowLabel('warning', view, 'x').title).toBe('Searched files')
+  })
+})
 
 const part = (overrides: Partial<ToolPart>): ToolPart => ({
   args: {},

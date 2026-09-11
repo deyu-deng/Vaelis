@@ -49,6 +49,7 @@ import {
   clampForDisplay,
   cleanVisibleText,
   countDiffLineStats,
+  failureRowLabel,
   inlineDiffFromResult,
   isFileEditTool,
   isPreviewableTarget,
@@ -434,6 +435,11 @@ function ToolEntry({ part }: ToolEntryProps) {
     return null
   }
 
+  // WP-UI-NO-INTERNALS: a failed row collapses to one line ("Tool did not
+  // succeed"); the tool's own label/command moves to the tooltip and stays in
+  // the expandable body. Success rows (incl. the C3 dispatch card) untouched.
+  const head = failureRowLabel(view.status, view, copy.failedShort)
+
   return (
     <div
       className={cn(
@@ -455,7 +461,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         >
           <span
             className="flex min-w-0 items-center gap-1.5"
-            title={isFileEdit && view.subtitle ? view.subtitle : undefined}
+            title={head.tooltip || (isFileEdit && view.subtitle ? view.subtitle : undefined)}
           >
             <ToolGlyph
               copy={copy}
@@ -463,9 +469,9 @@ function ToolEntry({ part }: ToolEntryProps) {
               icon={view.icon}
               status={leadingStatus(isPending, view.status)}
             />
-            <ToolTitle isPending={isPending} status={view.status} title={view.title} titleAction={view.titleAction} />
-            {!isFileEdit && view.subtitle.trim() ? (
-              <span className={cn(TOOL_HEADER_SUBTITLE_CLASS, 'min-w-0 truncate')}>{view.subtitle}</span>
+            <ToolTitle isPending={isPending} status={view.status} title={head.title} titleAction={view.titleAction} />
+            {!isFileEdit && head.subtitle.trim() ? (
+              <span className={cn(TOOL_HEADER_SUBTITLE_CLASS, 'min-w-0 truncate')}>{head.subtitle}</span>
             ) : null}
             {!isPending && view.countLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{view.countLabel}</span>}
             {showDiffStats && diffStats && (

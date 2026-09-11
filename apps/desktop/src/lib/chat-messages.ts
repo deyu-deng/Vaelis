@@ -4,6 +4,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
+import { stripInternalDirectives } from '@/lib/visible-user-text'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
@@ -177,14 +178,19 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
     return textContent
   }
 
-  const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
+  // WP-UI-NO-INTERNALS: the §8.2 hard route appends its directive to the stored
+  // user turn. Everything the human reads (bubble, edit composer, up-arrow
+  // history) is built from this string, so the directive is trimmed here — the
+  // stored row itself is left alone.
+  const stripped = stripInternalDirectives(textContent)
+  const marker = stripped.match(ATTACHED_CONTEXT_MARKER_RE)
 
   if (!marker || marker.index === undefined) {
-    return textContent.replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
+    return stripped.replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
   }
 
-  const visibleText = textContent.slice(0, marker.index).replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
-  const attachedContext = textContent.slice(marker.index + marker[0].length)
+  const visibleText = stripped.slice(0, marker.index).replace(CONTEXT_WARNINGS_MARKER_RE, '').trim()
+  const attachedContext = stripped.slice(marker.index + marker[0].length)
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText

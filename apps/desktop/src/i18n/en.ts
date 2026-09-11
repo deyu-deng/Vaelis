@@ -2545,6 +2545,7 @@ export const en: Translations = {
       statusError: 'Error',
       statusRecovered: 'Recovered',
       statusDone: 'Done',
+      failedShort: 'Tool did not succeed',
       actions: {
         read: 'Read',
         reading: 'Reading',

@@ -27,6 +27,12 @@ describe('deriveUserHistory', () => {
 
     expect(deriveUserHistory(messages, m => m.text)).toEqual(['second', 'first'])
   })
+
+  it('never puts an injected hard-route directive back on the composer (WP-UI-NO-INTERNALS)', () => {
+    const routed = '明天的日常安排是什么\n\n[§8.2 硬路由 · 本回合强制] 上面这句话命中总秘书冻结话术'
+
+    expect(deriveUserHistory([MSG('user', routed)], m => m.text)).toEqual(['明天的日常安排是什么'])
+  })
 })
 
 describe('browseBackward', () => {

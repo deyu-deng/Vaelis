@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { stripInternalDirectives } from '@/lib/visible-user-text'
+
 /**
  * Per-session input history browse state.
  *
@@ -45,6 +47,9 @@ function valid(sessionId: string | null | undefined): sessionId is string {
 /**
  * Derive the user-text ring (newest first) from session messages.
  * The caller is responsible for providing already-session-scoped messages.
+ *
+ * WP-UI-NO-INTERNALS: entries are passed through the display scrubber, so
+ * up-arrow never resurrects an injected hard-route directive into the composer.
  */
 export function deriveUserHistory<T extends { role: string }>(
   messages: readonly T[],
@@ -59,7 +64,7 @@ export function deriveUserHistory<T extends { role: string }>(
       continue
     }
 
-    const t = getText(m).trim()
+    const t = stripInternalDirectives(getText(m)).trim()
 
     if (t) {
       out.push(t)

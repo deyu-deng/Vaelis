@@ -122,6 +122,10 @@ describe('secretaryShellLabel (WP-G8 / 裁定 13+16)', () => {
       '日程秘书'
     )
   })
+
+  it('never prints a profile id: l2-agenda resolves to the short label (WP-UI-NO-INTERNALS)', () => {
+    expect(secretaryShortName('l2-agenda', 'l2-agenda')).toBe('日程秘书')
+  })
 })
 
 describe('pickL1MainSession (WP-G7)', () => {

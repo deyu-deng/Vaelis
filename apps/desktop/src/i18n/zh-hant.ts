@@ -2417,6 +2417,7 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
+      failedShort: '工具未成功',
       actions: {
         read: '已讀取',
         reading: '正在讀取',

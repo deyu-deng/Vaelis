@@ -43,6 +43,31 @@ export function isSecretaryDispatchTool(name: string): boolean {
   return name === 'vaelis_secretary_ask' || name === 'secretary_ask'
 }
 
+/**
+ * WP-UI-NO-INTERNALS: a failed tool call reads as ONE short line.
+ *
+ * Internal material (`curl … 5030/health`, `invalid name`, `Skipped`, …) belongs
+ * in the tooltip and the expanded row — not permanently parked in the middle
+ * column. Success rows (including the §8.2 dispatch C3 card) pass through
+ * unchanged, and the raw detail is still reachable by expanding the row.
+ */
+export function failureRowLabel(
+  status: ToolStatus,
+  view: Pick<ToolView, 'subtitle' | 'title'>,
+  failedLabel: string
+): { subtitle: string; title: string; tooltip: string } {
+  if (status !== 'error') {
+    return { subtitle: view.subtitle, title: view.title, tooltip: '' }
+  }
+
+  const tooltip = [view.title, view.subtitle]
+    .map(part => (part || '').trim())
+    .filter(Boolean)
+    .join(' · ')
+
+  return { subtitle: '', title: failedLabel, tooltip }
+}
+
 export interface DiffLineStats {
   added: number
   removed: number

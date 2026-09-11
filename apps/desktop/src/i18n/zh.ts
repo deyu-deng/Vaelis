@@ -2703,6 +2703,7 @@ export const zh: Translations = {
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      failedShort: '工具未成功',
       actions: {
         read: '已读取',
         reading: '正在读取',

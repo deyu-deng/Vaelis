@@ -105,9 +105,12 @@ const L2_SHORT_NAMES: Record<string, string> = {
 
 export function secretaryShortName(agentId: string, fallbackName?: string): string {
   const key = agentId.trim().toLowerCase()
+  // WP-UI-NO-INTERNALS: the rail must never print a profile id (`l2-agenda`).
+  // Try the id as given, then the profile-stripped form (`l2-agenda` → `agenda`).
+  const mapped = key ? (L2_SHORT_NAMES[key] ?? L2_SHORT_NAMES[key.replace(/^l[12][-_]/, '')]) : undefined
 
-  if (key && L2_SHORT_NAMES[key]) {
-    return L2_SHORT_NAMES[key]
+  if (mapped) {
+    return mapped
   }
 
   const named = (fallbackName || '').trim()

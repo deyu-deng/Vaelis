@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { stripInternalDirectives } from '@/lib/visible-user-text'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import { desktopQuotaProviders } from '@/store/desktop-quotas'
@@ -61,7 +62,12 @@ export function createClientSessionState(
 }
 
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  // WP-UI-NO-INTERNALS: a session created by a hard-routed turn carries the
+  // injected directive in its title/preview. Titles are user-facing (rail rows,
+  // pinned, palette, quick phrases) so they get the same trim as the bubble.
+  const raw = stripInternalDirectives(session.title?.trim() || session.preview?.trim() || '')
+
+  return raw.trim() || 'Untitled session'
 }
 
 export function coerceGatewayText(value: unknown): string {
