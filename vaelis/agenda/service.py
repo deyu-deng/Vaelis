@@ -42,6 +42,26 @@ class ConfirmSeqExpired(AgendaError):
     pass
 
 
+class ManualTargetMissing(AgendaError):
+    """Conversational change/cancel matched zero events (never guess)."""
+
+
+class ManualTargetAmbiguous(AgendaError):
+    """Conversational change/cancel matched 2+ events; carries candidates."""
+
+    def __init__(self, candidates: list[dict]):
+        super().__init__("multiple candidate events matched")
+        self.candidates = candidates
+
+
+def _candidate_brief(event: Event) -> dict:
+    return {
+        "id": event.id,
+        "title": event.title,
+        "start_at": event.start_at,
+    }
+
+
 def _plan_is_empty(plan: DailyPlan) -> bool:
     """Empty plans are honest zero-event snapshots; they stay out of 改动率."""
     return plan.status == "empty" or plan.event_count <= 0
@@ -219,6 +239,52 @@ class AgendaService:
                 action="manual_delete",
                 event_source=current.source,
             )
+
+    def resolve_manual_target(
+        self,
+        *,
+        event_id: Optional[str] = None,
+        title: Optional[str] = None,
+        day: Optional[str] = None,
+    ) -> Event:
+        """Locate the single event a conversational change/cancel refers to.
+
+        WP-L1-AGENDA-MUTATE: talking to the secretary must reach manual,
+        confirmed and pending rows alike (the chatlog pipeline's own
+        ``_find_change_target`` skip of manual rows is a different concern
+        and stays untouched).
+
+        ``event_id`` wins when present and existing. Otherwise ``title``
+        (case-insensitive substring) is matched within ``day``'s events
+        (``YYYY-MM-DD``); without ``day`` the default agenda window
+        (today..tomorrow) is searched. Zero hits →
+        :class:`ManualTargetMissing`; 2+ hits →
+        :class:`ManualTargetAmbiguous` with candidate briefs. Never guesses.
+        """
+        if event_id:
+            return self.get(event_id)
+
+        keyword = (title or "").strip().lower()
+        if not keyword:
+            raise ManualTargetMissing("需要 event_id 或 title 才能定位那条日程")
+
+        if day:
+            target_date = datetime.fromisoformat(str(day)).date()
+            start_from = datetime.combine(target_date, datetime.min.time())
+            start_to = datetime.combine(target_date, datetime.max.time())
+            events = self.list_agenda(start_from, start_to)
+        else:
+            events = self.list_agenda()
+
+        hits = [event for event in events if keyword in event.title.lower()]
+        if not hits:
+            raise ManualTargetMissing(
+                f"找不到标题含 {title!r} 的那条日程"
+                + (f"（{day}）" if day else "")
+            )
+        if len(hits) > 1:
+            raise ManualTargetAmbiguous([_candidate_brief(e) for e in hits])
+        return hits[0]
 
     # --- message-derived changes (land as pending) --------------------------
 

@@ -608,7 +608,13 @@ def ensure_agenda_agent(registry: AgentRegistry | None = None) -> tuple[AgentEnt
     return existing, spawned
 
 
-SECRETARY_ASK_INTENTS = ("refresh_agenda", "write_briefing")
+SECRETARY_ASK_INTENTS = ("refresh_agenda", "write_briefing", "mutate_agenda")
+
+# WP-L1-AGENDA-MUTATE: conversational write intents. Reading (refresh /
+# briefing) may hit chatlog; writing MUST NOT touch chatlog and must work
+# even when collection is dead.
+MUTATE_ACTIONS = ("create", "update", "delete")
+MUTATE_KINDS = ("meeting", "task", "ddl", "class")
 
 MISSING_PLAN_SUMMARY = "昨夜未生成计划"
 PLAN_BRIEFING_STATUSES = frozenset({"pending", "confirmed", "empty"})
@@ -709,6 +715,183 @@ def _uses_plan_briefing(plan: dict | None) -> bool:
     return bool(plan) and plan.get("status") in PLAN_BRIEFING_STATUSES
 
 
+def _secretary_service(pipeline=None):
+    """AgendaService bound to the pipeline's DB when available, else default."""
+    from vaelis.agenda.service import AgendaService, get_service
+
+    db_path = _secretary_db_path(pipeline)
+    if db_path is not None:
+        return AgendaService(db_path)
+    return get_service()
+
+
+def _mutate_event_payload(event) -> dict:
+    return {
+        "id": event.id,
+        "title": event.title,
+        "start_at": event.start_at,
+        "end_at": event.end_at,
+        "kind": event.kind,
+        "status": event.status,
+        "source": event.source,
+    }
+
+
+def _mutate_error(error: str, **extra) -> dict:
+    payload = {
+        "ok": False,
+        "intent": "mutate_agenda",
+        "error": error,
+    }
+    payload.update(extra)
+    return payload
+
+
+def run_mutate_agenda(
+    user_text: str,
+    *,
+    action: str | None = None,
+    title: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    kind: str | None = None,
+    event_id: str | None = None,
+    pipeline=None,
+    registry: AgentRegistry | None = None,
+) -> dict:
+    """WP-L1-AGENDA-MUTATE: add / change / cancel via the same secretary mouth.
+
+    Goes straight to ``AgendaService`` — never calls ``refresh_agenda`` and
+    never touches chatlog, so a dead collector cannot block a write.
+    User-spoken changes are human orders: ``create`` lands ``source=manual``
+    + ``confirmed``; ``delete`` on a confirmed row deletes it, on a pending
+    row it dismisses (never "rejects" the user's own words as a candidate).
+    Missing action / missing create title or start_at → error, zero writes.
+    """
+    user_text = (user_text or "").strip()
+    action = (action or "").strip().lower()
+    if action not in MUTATE_ACTIONS:
+        return _mutate_error(
+            "mutate_agenda 需要 action=create/update/delete",
+            action=action or None,
+            user_text=user_text,
+        )
+
+    title = (str(title).strip() if title else "") or None
+    start_at = (str(start_at).strip() if start_at else "") or None
+    end_at = (str(end_at).strip() if end_at else "") or None
+    kind = (str(kind).strip() if kind else "") or "task"
+    event_id = (str(event_id).strip() if event_id else "") or None
+
+    if kind not in MUTATE_KINDS:
+        return _mutate_error(
+            f"kind 只允许 {'/'.join(MUTATE_KINDS)}，收到 {kind!r}",
+            action=action,
+            user_text=user_text,
+        )
+    if action == "create":
+        if not title:
+            return _mutate_error("create 需要 title", action=action, user_text=user_text)
+        if not start_at:
+            # No invented 9:00, no invented 1-hour duration: ask instead.
+            return _mutate_error(
+                "create 需要 start_at（本地 ISO 钟点；缺钟点要问用户，不要编）",
+                action=action,
+                user_text=user_text,
+            )
+    if action in ("update", "delete") and not event_id and not title:
+        return _mutate_error(
+            f"{action} 需要 event_id 或 title 来定位那条日程",
+            action=action,
+            user_text=user_text,
+        )
+
+    try:
+        from vaelis.agenda.service import (
+            AgendaError,
+            ManualTargetAmbiguous,
+            ManualTargetMissing,
+        )
+
+        service = _secretary_service(pipeline)
+
+        if action == "create":
+            event = service.create_manual(
+                title=title, start_at=start_at, end_at=end_at, kind=kind
+            )
+            payload = {
+                "ok": True,
+                "intent": "mutate_agenda",
+                "action": "create",
+                "event": _mutate_event_payload(event),
+                "user_text": user_text,
+            }
+        else:
+            try:
+                target = service.resolve_manual_target(
+                    event_id=event_id,
+                    title=title,
+                    day=start_at[:10] if start_at else None,
+                )
+            except ManualTargetMissing as exc:
+                return _mutate_error(str(exc), action=action, user_text=user_text)
+            except ManualTargetAmbiguous as exc:
+                return _mutate_error(
+                    "同一时段匹配到多条同名日程，不猜；请指定其中一条",
+                    action=action,
+                    candidates=exc.candidates,
+                    user_text=user_text,
+                )
+
+            if action == "update":
+                event = service.update_manual(
+                    target.id,
+                    title=title,
+                    start_at=start_at,
+                    end_at=end_at,
+                    kind=kind,
+                )
+                payload = {
+                    "ok": True,
+                    "intent": "mutate_agenda",
+                    "action": "update",
+                    "event": _mutate_event_payload(event),
+                    "user_text": user_text,
+                }
+            else:  # delete: confirmed → delete, pending → dismiss (人令)
+                resolved = _mutate_event_payload(target)
+                if target.status == "pending":
+                    service.dismiss(target.id)
+                else:
+                    service.delete(target.id)
+                payload = {
+                    "ok": True,
+                    "intent": "mutate_agenda",
+                    "action": "delete",
+                    "deleted": True,
+                    "resolved": resolved,
+                    "user_text": user_text,
+                }
+    except AgendaError as exc:
+        return _mutate_error(str(exc), action=action, user_text=user_text)
+    except Exception as exc:  # store/validation errors must not fabricate success
+        logger.warning("vaelis: mutate_agenda write failed: %s", exc)
+        return _mutate_error(f"日程写入失败: {exc}", action=action, user_text=user_text)
+
+    # C3 name card is optional garnish — never worth a collection round-trip.
+    try:
+        entry, spawned = ensure_agenda_agent(registry or load_registry())
+        payload["agent"] = {
+            "id": entry.name,
+            "role": entry.role,
+            "profile": entry.profile_name,
+            "spawned": spawned,
+        }
+    except Exception as exc:
+        logger.warning("vaelis: mutate_agenda agent card skipped: %s", exc)
+    return payload
+
+
 def run_secretary_ask(
     intent: str,
     user_text: str,
@@ -717,22 +900,43 @@ def run_secretary_ask(
     pipeline=None,
     aigw_complete=None,
     fallback_complete=None,
+    action: str | None = None,
+    title: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    kind: str | None = None,
+    event_id: str | None = None,
 ) -> dict:
     """§8.2 secretary routing: pick agenda L2, one refresh, structured summary.
 
     ``refresh_agenda`` and ``write_briefing`` both refresh. write_briefing
     then generates via aigw ``workbuddy/*`` (F2 fallback = L2 cheap API).
     No kanban. No chat REST. Dead chatlog returns ``ok: False``.
+    ``mutate_agenda`` never reaches this chatlog path — see
+    :func:`run_mutate_agenda` (writes must survive a dead collector).
     """
     intent = (intent or "").strip()
     user_text = (user_text or "").strip()
     if intent not in SECRETARY_ASK_INTENTS:
         return {
             "ok": False,
-            "error": "intent must be refresh_agenda or write_briefing",
+            "error": "intent must be refresh_agenda, write_briefing or mutate_agenda",
         }
     if not user_text:
         return {"ok": False, "error": "user_text is required"}
+
+    if intent == "mutate_agenda":
+        return run_mutate_agenda(
+            user_text,
+            action=action,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            kind=kind,
+            event_id=event_id,
+            pipeline=pipeline,
+            registry=registry,
+        )
 
     reg = registry or load_registry()
     try:
@@ -1221,11 +1425,18 @@ L1_SOUL_BLOCK = f"""{L1_SOUL_BEGIN}
 工具回传若有 `plan`：先念 `plan.summary`（昨夜安排）；`missing`/`dismissed` 只陈述刷新后的事实，不要编计划。不要把事件列表再排一遍。
 终答像秘书说话，不解释调度细节。
 
+## 日程写入口（硬规则，不可绕过）
+
+- 用户让你加一条日程、改某条的时间或标题、取消某条日程：第一动作就是调用 `vaelis_secretary_ask`，`intent=mutate_agenda`，带上 `action`（`create`/`update`/`delete`）和钟点（本地 ISO，如 `2026-09-12T15:00:00`）。
+- 只有工具返回 `ok=true` 才能对用户说「已记下」。缺钟点就先问一句，不准编 9:00，不准默认补 1 小时。
+- 不准用 `refresh_agenda` / `write_briefing` 冒充写入。不准叫用户去看板手点、不准让用户自己另开入口。采集通不通都不影响你收下这条指令并落库。
+- 改/删没说清是哪条时，工具会返回候选列表；把候选念给用户选，不要替用户猜。
+
 ## 采集失败与防编造纪律（硬规则，不可绕过）
 
-- 若 `vaelis_secretary_ask` 返回 `ok=false` / `dead=true`，或 chatlog 采集失败：终答只能说明「日程采集当前不通」，并提示用户可改口述或去控制台看板查看；不得假装已拿到日程。
+- 若 `vaelis_secretary_ask` 返回 `ok=false` / `dead=true`，或 chatlog 采集失败：终答只能说明「日程采集当前不通」，并如实告知；不得假装已拿到日程。
 - 严禁用 memory、旧会话、项目印象或任何缓存去编造「明天安排」「早报日程表」等具体安排。采集不通时，宁可不答，也不要虚构。
-- `write_briefing` 失败时，不要自己落笔写带钟点的假日程（如「09:00 开会、14:00 健身」）。只如实告知生成失败，交给用户或看板。
+- `write_briefing` 失败时，不要自己落笔写带钟点的假日程（如「09:00 开会、14:00 健身」）。只如实告知生成失败。
 {L1_SOUL_END}
 """
 

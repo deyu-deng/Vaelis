@@ -262,25 +262,62 @@ SECRETARY_ASK_SCHEMA = {
     "description": (
         "总秘书派工入口（软路由优先选这个）。用户问明天安排/日常日程 "
         "→ intent=refresh_agenda；根据明天日程写早报 "
-        "→ intent=write_briefing。不要用 session_search 搜会话，"
+        "→ intent=write_briefing；用户让你加/改/取消一条日程 "
+        "→ intent=mutate_agenda（带上 action 和钟点，缺钟点先问用户，"
+        "不要编 9:00，不要默认 1 小时）。"
+        "不要用 session_search 搜会话，"
         "不要开 terminal 跑命令，不要 clarify 空转。工具内部按名单选日程 "
         "L2（缺则 spawn 一个模板），不要写死 agent id。采集不通时如实报错，"
-        "不要编造日程。不要用 kanban dispatch 代替本工具。"
+        "不要编造日程；mutate_agenda 写入不受采集状态影响。"
+        "不要用 kanban dispatch 代替本工具。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "intent": {
                 "type": "string",
-                "enum": ["refresh_agenda", "write_briefing"],
+                "enum": ["refresh_agenda", "write_briefing", "mutate_agenda"],
                 "description": (
                     "refresh_agenda = 明天的日常安排（一轮采集刷新 + 看板摘要）；"
-                    "write_briefing = 根据明天的日程写早报（同样先刷新）。"
+                    "write_briefing = 根据明天的日程写早报（同样先刷新）；"
+                    "mutate_agenda = 用户口头的加/改/取消日程（直接落库，不碰采集）。"
                 ),
             },
             "user_text": {
                 "type": "string",
                 "description": "用户原话。原样交给日程 L2，不要改写或省略。",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["create", "update", "delete"],
+                "description": "mutate_agenda 必填：create=新增，update=修改，delete=取消。",
+            },
+            "title": {
+                "type": "string",
+                "description": (
+                    "mutate_agenda：create 必填；update/delete 用标题关键词"
+                    "定位那条日程（要改标题时也填新标题）。"
+                ),
+            },
+            "start_at": {
+                "type": "string",
+                "description": (
+                    "mutate_agenda：create 必填，本地 ISO（如 2026-09-12T15:00:00）；"
+                    "update 改钟点时给；不确定就先问用户，禁止编 9:00。"
+                ),
+            },
+            "end_at": {
+                "type": "string",
+                "description": "mutate_agenda 可空：结束时间，不确定就 null，禁止默认 1 小时。",
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["meeting", "task", "ddl", "class"],
+                "description": "mutate_agenda 可空，默认 task。",
+            },
+            "event_id": {
+                "type": "string",
+                "description": "mutate_agenda：update/delete 已知事件 id 时优先用它。",
             },
         },
         "required": ["intent", "user_text"],
@@ -411,12 +448,18 @@ def handle_master_approve(args: dict, **kwargs) -> str:
 
 
 def handle_secretary_ask(args: dict, **kwargs) -> str:
-    """§8.2: route 「明天安排」/「写早报」 to the agenda L2. Not kanban."""
+    """§8.2: route 「明天安排」/「写早报」/「加改删日程」 to the agenda L2. Not kanban."""
     from vaelis.agents.registry import run_secretary_ask
 
     result = run_secretary_ask(
         str(args.get("intent") or ""),
         str(args.get("user_text") or ""),
+        action=args.get("action"),
+        title=args.get("title"),
+        start_at=args.get("start_at"),
+        end_at=args.get("end_at"),
+        kind=args.get("kind"),
+        event_id=args.get("event_id"),
     )
     if not result.get("ok"):
         extra = {key: value for key, value in result.items() if key != "error"}
