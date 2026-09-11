@@ -7,8 +7,10 @@ land as ``unresolved`` today. This module spends a cheap L2 call on them.
 Two contracts it must not break:
 
 **Privacy (ADR-0010)** — only :func:`vaelis.agenda.rules.snippet` output ever
-reaches the model. Never the raw message, never surrounding context, never a
-history of the conversation.
+reaches the model. Never the raw message, never a history of the conversation.
+The single narrow opening (WP-EXTRACT-CONTEXT) is the ±1 neighbour snippet,
+which is needed to read "明天/下午/约一下" correctly and is capped by
+``rules.snippet`` just like the message itself.
 
 **Cost (ADR-0011)** — this is L2 work. The route is resolved through
 :mod:`vaelis.routing` and the secretary's model is rejected outright; wiring the
@@ -33,8 +35,8 @@ from vaelis.agenda.rules import RuleHit, snippet
 from vaelis.routing import L2_AGENDA, ModelRoute, ModelRouter, RoutingError, get_router
 
 from .client import ChatMessage
-from .confirm import Candidate, HeuristicConfirmer, _DEFAULT_CLOCK, _title_from
-from .timeparse import parse_when
+from .confirm import Candidate, ConfirmContext, HeuristicConfirmer, _title_from
+from .timeparse import parse_sent_at
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +51,18 @@ _DEFAULT_TIMEOUT = 20.0
 _JSON_BLOCK = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 _SYSTEM_PROMPT = (
-    "你是日程抽取器。从给定的一条消息中抽出最多一个日程项。\n"
+    "你是日程抽取器。给定一条消息及其上下文，判断它是否是「用户本人」要执行或参加的安排。\n"
     "只输出一行 JSON，不要任何解释、不要 markdown 代码块：\n"
-    '{"date":"YYYY-MM-DD","time":"HH:MM","title":"不超过20字"}\n'
+    '{"is_users_plan":true,"date":"YYYY-MM-DD","time":"HH:MM","end_time":"HH:MM或null","title":"不超过20字"}\n'
     "规则：\n"
-    "- date 必须是能确定的具体日期；无法确定就填 null\n"
-    "- time 无法确定就填 null\n"
-    "- 这条消息本身不是日程安排时，三个字段全部填 null\n"
+    "- 先判断 is_users_plan：消息里是用户本人要去做/参加的事 → true；"
+    "别人的课表、群里起哄、转发别人的安排、纯闲聊 → false。\n"
+    "- is_users_plan 为 false 时，date/time/end_time/title 全部填 null，不要硬凑。\n"
+    "- 用「这条消息的发送时间」作为锚点解析「今天/明天/后天/下午」等相对时间，"
+    "不要用其他时间（例如当前时间）推算。\n"
+    "- date 无法确定具体日期就填 null。\n"
+    "- time 无法从消息确定就填 null，禁止用默认时间（如 09:00）代替。\n"
+    "- end_time 无法确定就填 null，不要编造时长。\n"
 )
 
 
@@ -118,16 +125,76 @@ def openai_compatible_completer(
     return content if isinstance(content, str) else None
 
 
-def _build_prompt(text: str, hit: RuleHit, now: datetime) -> str:
-    """Assemble the prompt. ``text`` must already be a snippet — ADR-0010."""
-    weekday = "一二三四五六日"[now.weekday()]
-    return (
-        f"今天是 {now.date().isoformat()}（周{weekday}），现在 {now:%H:%M}。\n"
+def _is_self_text(is_self: Optional[bool]) -> str:
+    if is_self is True:
+        return "是本人发出"
+    if is_self is False:
+        return "不是本人发出（是别人发的）"
+    return "未知（chatlog 未提供，无法判断是否本人发出）"
+
+
+def _build_prompt(
+    message: ChatMessage,
+    hit: RuleHit,
+    now: datetime,
+    context: Optional[ConfirmContext] = None,
+) -> str:
+    """Assemble the prompt for one message.
+
+    Only snippets ever leave the machine (ADR-0010): the message body is the
+    ``snippet`` of ``message.content`` and the neighbours are the snippets the
+    pipeline clipped. The prompt always carries *who* sent it, *when* it was
+    sent (the anchor for all relative times), the conversation's display name,
+    and whether it was sent by the account owner — that is the whole point of
+    the extraction (WP-EXTRACT-CONTEXT).
+    """
+    # The message's own sent time is the anchor for "明天/下午"; the wall clock
+    # is only a last resort when chatlog gave us nothing parseable.
+    sent_raw = (message.sent_at or "").strip()
+    sent_ref = parse_sent_at(sent_raw, fallback=now)
+    weekday = "一二三四五六日"[sent_ref.weekday()]
+
+    sender = (message.sender or "").strip()
+    talker_name = (context.talker_name if context else None) or ""
+    talker_label = talker_name.strip() or (message.talker.strip() or "未知")
+
+    lines: list[str] = []
+    if sent_raw:
+        lines.append(
+            f"这条消息发送于 {sent_raw}（{sent_ref:%Y-%m-%d %H:%M}，周{weekday}）。"
+            "所有「今天/明天/后天/上午/下午」等相对时间都以这条消息的发送时间为准，"
+            "不要用当前时间推算。"
+        )
+    else:
+        lines.append(
+            f"这条消息没有可用的发送时间；参考当前时间 {now:%Y-%m-%d %H:%M}（周{weekday}）。"
+        )
+    lines.append(f"发送人：{sender if sender else '未知'}")
+    lines.append(f"会话：{talker_label}")
+    lines.append(f"是否为本人发出：{_is_self_text(message.is_self)}")
+    lines.append(
         f"消息已判定为类别「{hit.category}」"
-        f"{'，且这是对既有安排的变更' if hit.is_change else ''}。\n"
-        "消息片段：\n"
-        f'"""\n{text}\n"""'
+        f"{'，且这是对既有安排的变更。' if hit.is_change else '。'}"
     )
+
+    prev_snippet = (context.prev_snippet if context else None) or ""
+    next_snippet = (context.next_snippet if context else None) or ""
+    if prev_snippet or next_snippet:
+        lines.append(
+            "同一会话里这条消息前后的邻居（仅供理解语气/指代，"
+            "绝对不要把邻居本身当成用户的安排）："
+        )
+        if prev_snippet:
+            lines.append(f"上文：{prev_snippet}")
+        if next_snippet:
+            lines.append(f"下文：{next_snippet}")
+
+    lines.append("当前这条消息的片段（只依据它判断）：")
+    lines.append('"""')
+    # Clip here too: the message body is the only part that must be a snippet.
+    lines.append(snippet(message.content))
+    lines.append('"""')
+    return "\n".join(lines)
 
 
 def _extract_json(text: str) -> Optional[dict]:
@@ -142,15 +209,37 @@ def _extract_json(text: str) -> Optional[dict]:
     return parsed if isinstance(parsed, dict) else None
 
 
+_REFUSAL_STRINGS = {"false", "0", "no", "n", "否", "不是"}
+
+
+def _explicitly_not_the_users_plan(parsed: dict) -> bool:
+    """True when the model said this is not the user's own plan."""
+    flag = parsed.get("is_users_plan")
+    if flag is None:
+        flag = parsed.get("is_user_plan")
+    if flag is False:
+        return True
+    if isinstance(flag, str) and flag.strip().lower() in _REFUSAL_STRINGS:
+        return True
+    return False
+
+
 def _to_candidate(
     reply: str,
     message: ChatMessage,
     hit: RuleHit,
     now: datetime,
+    context: Optional[ConfirmContext] = None,
 ) -> Optional[Candidate]:
     parsed = _extract_json(reply)
     if parsed is None:
         logger.debug("model confirmer returned no JSON; leaving unresolved")
+        return None
+
+    # The model judged this is someone else's plan / not something the user will
+    # do → not an agenda entry, regardless of any date it echoed.
+    if _explicitly_not_the_users_plan(parsed):
+        logger.debug("model confirmer: not the user's own plan; not ingesting")
         return None
 
     raw_day = parsed.get("date")
@@ -171,11 +260,25 @@ def _to_candidate(
             clock = None
 
     if clock is None:
-        # Prefer whatever the deterministic parse found before falling back to
-        # the category default — the local parser is free and usually right.
-        clock = parse_when(message.content, now=now).clock or _DEFAULT_CLOCK.get(
-            hit.category, time(9, 0)
-        )
+        # No fake default. A date without a stated clock is genuinely
+        # unresolved — better honestly "unresolved" than a made-up 09:00 that
+        # the user would have to fix. (WP-EXTRACT-CONTEXT removed the old
+        # _DEFAULT_CLOCK fill.)
+        logger.debug("model confirmer gave a date but no clock; leaving unresolved")
+        return None
+
+    end_at: Optional[str] = None
+    raw_end = parsed.get("end_time")
+    if isinstance(raw_end, str) and raw_end.strip():
+        try:
+            end_clock = time.fromisoformat(raw_end.strip())
+            end_at = (
+                datetime.combine(day, end_clock)
+                .replace(second=0, microsecond=0)
+                .isoformat()
+            )
+        except ValueError:
+            end_at = None
 
     title = parsed.get("title")
     if not isinstance(title, str) or not title.strip():
@@ -186,6 +289,7 @@ def _to_candidate(
         start_at=datetime.combine(day, clock).replace(second=0, microsecond=0).isoformat(),
         kind=hit.category,
         is_change=hit.is_change,
+        end_at=end_at,
     )
 
 
@@ -230,7 +334,12 @@ class ModelConfirmer:
             )
         return route
 
-    def confirm(self, message: ChatMessage, hit: RuleHit) -> Optional[Candidate]:
+    def confirm(
+        self,
+        message: ChatMessage,
+        hit: RuleHit,
+        context: Optional[ConfirmContext] = None,
+    ) -> Optional[Candidate]:
         try:
             route = self.route()
         except RoutingError as exc:
@@ -242,8 +351,9 @@ class ModelConfirmer:
             return None
 
         now = self._now()
-        # The only text allowed to leave the machine (ADR-0010).
-        prompt = _build_prompt(snippet(message.content), hit, now)
+        # The only text allowed to leave the machine is the message's own
+        # snippet plus the ±1 neighbour snippets (ADR-0010 + WP-EXTRACT-CONTEXT).
+        prompt = _build_prompt(message, hit, now, context)
 
         try:
             reply = self._completer(prompt, route)
@@ -253,7 +363,7 @@ class ModelConfirmer:
 
         if not reply:
             return None
-        return _to_candidate(reply, message, hit, now)
+        return _to_candidate(reply, message, hit, now, context)
 
 
 class FallbackConfirmer:
@@ -275,8 +385,13 @@ class FallbackConfirmer:
         self._primary = primary or HeuristicConfirmer(now_factory=now_factory)
         self._fallback = fallback
 
-    def confirm(self, message: ChatMessage, hit: RuleHit) -> Optional[Candidate]:
-        candidate = self._primary.confirm(message, hit)
+    def confirm(
+        self,
+        message: ChatMessage,
+        hit: RuleHit,
+        context: Optional[ConfirmContext] = None,
+    ) -> Optional[Candidate]:
+        candidate = self._primary.confirm(message, hit, context)
         if candidate is not None or self._fallback is None:
             return candidate
-        return self._fallback.confirm(message, hit)
+        return self._fallback.confirm(message, hit, context)

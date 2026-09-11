@@ -16,7 +16,7 @@ import pytest
 
 from vaelis.agenda.rules import RuleHit, match
 from vaelis.collectors.chatlog.client import ChatMessage
-from vaelis.collectors.chatlog.confirm import HeuristicConfirmer
+from vaelis.collectors.chatlog.confirm import ConfirmContext, HeuristicConfirmer
 from vaelis.collectors.chatlog.model_confirm import (
     FallbackConfirmer,
     ModelConfirmer,
@@ -204,8 +204,13 @@ def test_a_null_date_is_not_invented():
     assert confirmer.confirm(message("明天下午三点开会"), hit) is None
 
 
-def test_a_missing_clock_falls_back_to_the_category_default():
-    """ddl defaults to end of day, meetings to morning — never midnight."""
+def test_a_missing_clock_is_left_unresolved_instead_of_a_fake_default():
+    """WP-EXTRACT-CONTEXT removed the ``_DEFAULT_CLOCK`` fill.
+
+    A date with no stated clock is genuinely unresolved: better an honest
+    "unresolved" than a made-up 09:00/23:59 the user has to correct. So the
+    confirmer must refuse here, not invent a time.
+    """
     hit = RuleHit(matched_keywords=["截止"], category="ddl")
     confirmer = ModelConfirmer(
         completer=RecordingCompleter('{"date":"2026-08-26","time":null,"title":"交表"}'),
@@ -213,9 +218,7 @@ def test_a_missing_clock_falls_back_to_the_category_default():
         now_factory=lambda: NOW,
     )
 
-    candidate = confirmer.confirm(message("8月26日截止交表"), hit)
-    assert candidate is not None
-    assert candidate.start_at == "2026-08-26T23:59:00"
+    assert confirmer.confirm(message("8月26日截止交表"), hit) is None
 
 
 def test_prose_around_the_json_is_tolerated():
@@ -338,3 +341,126 @@ def test_without_a_fallback_the_chain_matches_the_heuristic():
 
     hit = match("三点实验室开会") or RuleHit()
     assert chained.confirm(message("三点实验室开会"), hit) is None
+
+
+# --- WP-EXTRACT-CONTEXT: who sent it, when, and the surrounding lines --------
+
+
+def test_the_heuristic_anchors_relative_days_on_sent_time_not_the_wall_clock():
+    """A message sent at 23:00 saying "明天下午三点" must land the NEXT day.
+
+    The wall clock here has already rolled past midnight (00:05 on 9/11); only
+    the message's own sent time (9/10) gives the right answer, 9/11.
+    """
+    confirmer = HeuristicConfirmer(now_factory=lambda: datetime(2026, 9, 11, 0, 5))
+    hit = RuleHit(category="meeting", matched_keywords=["开会"])
+    msg = ChatMessage(
+        msg_id="m1",
+        talker="班级群",
+        sender="导师",
+        sent_at="2026-09-10T23:00",
+        content="明天下午三点开会",
+    )
+
+    candidate = confirmer.confirm(msg, hit)
+
+    assert candidate is not None
+    assert candidate.start_at == "2026-09-11T15:00:00"
+
+
+def test_the_heuristic_refuses_a_date_without_a_clock():
+    """No default clock: a date but no stated hour is handed to the model."""
+    confirmer = HeuristicConfirmer(now_factory=lambda: NOW)
+    hit = RuleHit(category="meeting", matched_keywords=["聚餐"])
+    msg = ChatMessage(
+        msg_id="m1",
+        talker="班级群",
+        sender="导师",
+        sent_at="2026-08-25 10:00:00",
+        content="周五晚上聚餐",
+    )
+
+    assert confirmer.confirm(msg, hit) is None
+
+
+def test_the_prompt_carries_sender_sent_time_and_neighbours():
+    completer = RecordingCompleter()
+    confirmer = ModelConfirmer(completer=completer, router=router_with(), now_factory=lambda: NOW)
+    hit = match("明天下午三点开会") or RuleHit()
+    context = ConfirmContext(
+        talker_name="拓扑测试群",
+        prev_snippet="上面的人先说改时间",
+        next_snippet="下面的人回复收到",
+    )
+
+    # message() -> sender="导师", sent_at="2026-08-25 10:00:00".
+    confirmer.confirm(message("明天下午三点开会"), hit, context)
+
+    prompt = completer.prompts[0]
+    assert "导师" in prompt, "sender missing from the prompt"
+    assert "2026-08-25 10:00:00" in prompt, "sent time missing from the prompt"
+    assert "拓扑测试群" in prompt, "talker display name missing from the prompt"
+    assert "上面的人先说改时间" in prompt and "上文" in prompt
+    assert "下面的人回复收到" in prompt and "下文" in prompt
+
+
+@pytest.mark.parametrize(
+    "is_self,expected",
+    [
+        (True, "是本人发出"),
+        (False, "不是本人发出"),
+        (None, "未知"),
+    ],
+)
+def test_is_self_is_reported_without_guessing(is_self, expected):
+    completer = RecordingCompleter()
+    confirmer = ModelConfirmer(completer=completer, router=router_with(), now_factory=lambda: NOW)
+    hit = match("明天下午三点开会") or RuleHit()
+    msg = ChatMessage(
+        msg_id="m1",
+        talker="班级群",
+        sender="导师",
+        sent_at="2026-08-25 10:00:00",
+        content="明天下午三点开会",
+        is_self=is_self,
+    )
+
+    confirmer.confirm(msg, hit)
+
+    assert expected in completer.prompts[0]
+
+
+def test_a_reply_saying_it_is_not_the_users_plan_is_refused():
+    """Someone else's class schedule / forwarded plan must not be ingested."""
+    completer = RecordingCompleter(
+        '{"is_users_plan":false,"date":"2026-08-26","time":"15:00","title":"别人的课"}'
+    )
+    confirmer = ModelConfirmer(completer=completer, router=router_with(), now_factory=lambda: NOW)
+    hit = match("明天下午三点开会") or RuleHit()
+
+    assert confirmer.confirm(message("明天下午三点开会"), hit) is None
+
+
+def test_an_end_time_becomes_the_candidate_end_at():
+    completer = RecordingCompleter(
+        '{"is_users_plan":true,"date":"2026-08-26","time":"15:00","end_time":"16:00","title":"组会"}'
+    )
+    confirmer = ModelConfirmer(completer=completer, router=router_with(), now_factory=lambda: NOW)
+    hit = match("明天下午三点到四点开会") or RuleHit()
+
+    candidate = confirmer.confirm(message("明天下午三点到四点开会"), hit)
+
+    assert candidate is not None
+    assert candidate.start_at == "2026-08-26T15:00:00"
+    assert candidate.end_at == "2026-08-26T16:00:00"
+
+
+def test_a_missing_end_time_is_not_invented():
+    completer = RecordingCompleter('{"date":"2026-08-26","time":"15:00","title":"组会"}')
+    confirmer = ModelConfirmer(completer=completer, router=router_with(), now_factory=lambda: NOW)
+    hit = match("明天下午三点开会") or RuleHit()
+
+    candidate = confirmer.confirm(message("明天下午三点开会"), hit)
+
+    assert candidate is not None
+    assert candidate.end_at is None

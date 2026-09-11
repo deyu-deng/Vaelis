@@ -269,7 +269,11 @@ def test_blacklist_mode_collects_all_known_when_blacklist_empty(tmp_path):
         {
             "班级群": [message("明天下午三点开组会", msg_id="a1")],
             "项目群": [message("周三上午十点答辩", msg_id="b1", talker="项目群")],
-            "私人聊天": [message("周五晚上聚餐", msg_id="c1", talker="私人聊天")],
+            # WP-EXTRACT-CONTEXT: a date without a clock is no longer defaulted
+            # to 09:00 — give this one a clock so the test still exercises
+            # "blacklist collects every known talker" rather than the removed
+            # default-clock behaviour.
+            "私人聊天": [message("周五晚上八点聚餐", msg_id="c1", talker="私人聊天")],
         }
     )
     pipeline = blacklist_pipeline(
@@ -529,6 +533,20 @@ def test_normalizer_rejects_unusable_records():
     assert normalize_message("not a dict") is None
 
 
+def test_normalizer_reads_is_self_and_never_guesses_when_absent():
+    """WP-EXTRACT-CONTEXT: is_self is recorded when chatlog says so, else None."""
+    # Absent -> unknown (None), never assumed to be the user or someone else.
+    assert normalize_message({"content": "明天开会", "talker": "群"}).is_self is None
+    # Present, in the several spellings chatlog uses.
+    assert normalize_message({"content": "明天开会", "isSend": True}).is_self is True
+    assert normalize_message({"content": "明天开会", "isSelf": 1}).is_self is True
+    assert normalize_message({"content": "明天开会", "is_self": "true"}).is_self is True
+    assert normalize_message({"content": "明天开会", "isSend": 0}).is_self is False
+    assert normalize_message({"content": "明天开会", "isSend": "false"}).is_self is False
+    # Present but not a boolean -> still unknown, never guessed.
+    assert normalize_message({"content": "明天开会", "isSend": "maybe"}).is_self is None
+
+
 def test_seen_store_prunes_old_rows(tmp_path):
     store = SeenStore(tmp_path / "seen.db")
     assert store.mark_seen("x") is True
@@ -568,3 +586,84 @@ def test_list_talker_sessions_carries_the_chatlog_display_name(monkeypatch):
     ]
     # ids-only view unchanged for blacklist / full-collection sweeps.
     assert client.list_talkers() == ["123@chatroom", "wxid_abc"]
+
+
+# --------------------------------------------------------------------------
+# WP-EXTRACT-CONTEXT: sent-at anchor, sender evidence, ±1 neighbour context
+# --------------------------------------------------------------------------
+
+
+def test_evidence_records_who_sent_the_message(pipeline):
+    """The board shows "谁说的" — sender must ride into the evidence."""
+    report = IngestReport()
+    pipeline.handle_message(message("明天下午三点开组会"), report)
+
+    evidence = pipeline.service.list_pending()[0].evidence
+    assert evidence["sender"] == "导师"
+    assert evidence["sent_at"] == "2026-08-25 10:00:00"
+    assert evidence["talker"] == "班级群"
+
+
+def test_message_sent_last_night_anchors_tomorrow_on_its_sent_time(tmp_path):
+    """Sent 9/10 23:00, "明天下午三点" → 9/11 15:00, not the wall-clock day."""
+    sent = ChatMessage(
+        msg_id="s1",
+        talker="班级群",
+        sender="导师",
+        sent_at="2026-09-10T23:00",
+        content="明天下午三点开会",
+    )
+    pipeline = ChatlogPipeline(
+        config=CollectorConfig(talkers=["班级群"], enabled=True),
+        client=FakeClient({"班级群": [sent]}),
+        service=AgendaService(tmp_path / "agenda.db"),
+        seen=SeenStore(tmp_path / "seen.db"),
+        # Wall clock has rolled past midnight; the sent time must still win.
+        confirmer=HeuristicConfirmer(now_factory=lambda: datetime(2026, 9, 11, 0, 5)),
+    )
+
+    report = pipeline.run_once()
+
+    assert report.created, "the anchored message should have been ingested"
+    assert pipeline.service.list_pending()[0].start_at == "2026-09-11T15:00:00"
+
+
+def test_neighbours_are_capped_at_one_each_side(tmp_path):
+    """Only the ±1 lines reach a confirmer — never the 3rd message back."""
+    captured: dict[str, object] = {}
+
+    class ContextRecorder:
+        def confirm(self, message, hit, context=None):
+            captured[message.msg_id] = context
+            return None
+
+    msgs = [
+        message("明天下午三点开会甲", msg_id="a1"),
+        message("明天下午三点开会乙", msg_id="a2"),
+        message("明天下午三点开会丙", msg_id="a3"),
+        message("明天下午三点开会丁", msg_id="a4"),
+    ]
+    pipeline = ChatlogPipeline(
+        config=CollectorConfig(talkers=["班级群"], enabled=True),
+        client=FakeClient({"班级群": msgs}),
+        service=AgendaService(tmp_path / "agenda.db"),
+        seen=SeenStore(tmp_path / "seen.db"),
+        confirmer=ContextRecorder(),
+    )
+
+    pipeline.run_once()
+
+    first = captured["a1"]
+    assert first.prev_snippet is None
+    assert "乙" in first.next_snippet
+
+    second = captured["a2"]
+    assert "甲" in second.prev_snippet
+    assert "丙" in second.next_snippet
+    # Two lines away: the 4th must never appear in the 2nd's context.
+    assert "丁" not in (second.prev_snippet or "")
+    assert "丁" not in (second.next_snippet or "")
+
+    last = captured["a4"]
+    assert last.next_snippet is None
+    assert "丙" in last.prev_snippet

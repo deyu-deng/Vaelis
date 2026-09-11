@@ -33,6 +33,11 @@ class ChatMessage:
     sender: str
     sent_at: str
     content: str
+    # Whether the message was sent by the account owner, when chatlog tells us
+    # (``isSend`` / ``isSelf`` / …). ``None`` means "chatlog did not say" — we
+    # report that honestly rather than guessing, because "who sent it" is the
+    # whole point of the extraction (WP-EXTRACT-CONTEXT).
+    is_self: Optional[bool] = None
 
     @property
     def is_empty(self) -> bool:
@@ -65,6 +70,41 @@ def _first(payload: dict, *names: str) -> Any:
     return None
 
 
+# chatlog spells "did the account owner send this?" several ways across
+# versions; accept any of them and read the value honestly.
+_IS_SELF_KEYS = ("isSend", "isSelf", "is_self", "is_send", "send")
+_IS_SELF_TRUE = {"true", "1", "yes", "y", "是", "self", "me", "自己"}
+_IS_SELF_FALSE = {"false", "0", "no", "n", "否", "不是", "other", "别人", "他人"}
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    """Coerce a chatlog flag to a real bool, or ``None`` when it is not one.
+
+    Returning ``None`` for anything ambiguous (an unknown string, a nested
+    object) keeps us from inventing an answer we do not actually have.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _IS_SELF_TRUE:
+            return True
+        if text in _IS_SELF_FALSE:
+            return False
+    return None
+
+
+def _parse_is_self(raw: dict) -> Optional[bool]:
+    for key in _IS_SELF_KEYS:
+        if key in raw:
+            parsed = _as_bool(raw[key])
+            if parsed is not None:
+                return parsed
+    return None
+
+
 def normalize_message(raw: Any, *, fallback_talker: str = "") -> Optional[ChatMessage]:
     """Map one chatlog record onto :class:`ChatMessage`, or ``None`` if unusable."""
     if not isinstance(raw, dict):
@@ -90,6 +130,7 @@ def normalize_message(raw: Any, *, fallback_talker: str = "") -> Optional[ChatMe
         sender=sender,
         sent_at=sent_at,
         content=content,
+        is_self=_parse_is_self(raw),
     )
 
 

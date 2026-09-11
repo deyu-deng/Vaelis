@@ -13,7 +13,7 @@ this package may send more than the matched snippet off-device
 
 from .client import ChatlogUnavailable, ChatMessage
 from .config import CollectorConfig
-from .confirm import Candidate, Confirmer, HeuristicConfirmer, NullConfirmer
+from .confirm import Candidate, Confirmer, ConfirmContext, HeuristicConfirmer, NullConfirmer
 from .pipeline import ChatlogDead, ChatlogPipeline, IngestReport
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "ChatlogUnavailable",
     "CollectorConfig",
     "Confirmer",
+    "ConfirmContext",
     "HeuristicConfirmer",
     "IngestReport",
     "NullConfirmer",

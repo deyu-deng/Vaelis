@@ -6,7 +6,7 @@ from datetime import date, datetime, time
 
 import pytest
 
-from vaelis.collectors.chatlog.timeparse import parse_when
+from vaelis.collectors.chatlog.timeparse import parse_sent_at, parse_when
 
 # A Tuesday, so weekday maths is observable.
 NOW = datetime(2026, 8, 25, 10, 0)
@@ -80,3 +80,36 @@ def test_iso_date_with_clock():
     parsed = parse_when("2026-09-01 14:00 报到", now=NOW)
     assert parsed.day == date(2026, 9, 1)
     assert parsed.clock == time(14, 0)
+
+
+# --- sent_at parsing: the anchor for every relative date ---------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("2026-09-10 23:00:00", datetime(2026, 9, 10, 23, 0)),
+        ("2026-09-10 23:00", datetime(2026, 9, 10, 23, 0)),
+        ("2026-09-10T23:00:00", datetime(2026, 9, 10, 23, 0)),
+        ("2026-09-10T23:00", datetime(2026, 9, 10, 23, 0)),
+        ("2026/09/10 23:00", datetime(2026, 9, 10, 23, 0)),
+        ("2026-09-10", datetime(2026, 9, 10, 0, 0)),
+    ],
+)
+def test_parse_sent_at_accepts_the_common_chatlog_formats(raw, expected):
+    assert parse_sent_at(raw) == expected
+
+
+def test_parse_sent_at_reads_epoch_seconds_and_milliseconds():
+    moment = datetime(2026, 9, 10, 23, 0)
+    assert parse_sent_at(str(int(moment.timestamp()))) == moment
+    assert parse_sent_at(str(int(moment.timestamp() * 1000))) == moment
+
+
+def test_parse_sent_at_falls_back_only_when_unparseable():
+    fallback = datetime(2026, 9, 10, 23, 0)
+    assert parse_sent_at("", fallback=fallback) == fallback
+    assert parse_sent_at("not a timestamp", fallback=fallback) == fallback
+    # No fallback -> honestly nothing, never a guess.
+    assert parse_sent_at("", fallback=None) is None
+    assert parse_sent_at("??", fallback=None) is None

@@ -10,10 +10,13 @@ clock should mean (a deadline defaults to end-of-day, a meeting to morning).
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 
@@ -152,3 +155,64 @@ def parse_when(text: str, *, now: Optional[datetime] = None) -> ParsedWhen:
     source = text or ""
 
     return ParsedWhen(day=_parse_day(source, reference.date()), clock=_parse_clock(source))
+
+
+# Common non-ISO shapes chatlog hands back. Tried in order after ISO.
+_SENT_AT_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d",
+    "%Y/%m/%d",
+    "%Y年%m月%d日 %H:%M:%S",
+    "%Y年%m月%d日",
+)
+
+# Epoch values above this are milliseconds, not seconds (a seconds value that
+# large would be year ~2286; chatlog sends 13-digit ms timestamps).
+_EPOCH_MS_THRESHOLD = 10_000_000_000
+
+
+def parse_sent_at(raw: str, *, fallback: Optional[datetime] = None) -> Optional[datetime]:
+    """Parse a chatlog ``sent_at`` string into a naive local datetime.
+
+    chatlog formats differ between versions, so we deliberately accept several
+    shapes: ISO-8601 (with or without ``Z`` / offset), epoch seconds or
+    milliseconds, and the common ``%Y-%m-%d %H:%M:%S`` / ``%Y/%m/%d`` forms.
+
+    This is the *only* anchor for relative dates ("明天", "下午"): the moment a
+    message was sent, not the moment we happened to sweep it. When the value
+    cannot be parsed the caller's ``fallback`` (usually the wall clock) is
+    returned — never a silently invented time — and the failure is logged at
+    ``debug`` because it is expected for some chatlog builds.
+    """
+    text = (raw or "").strip()
+    if text:
+        stripped = text.lstrip("-")
+        if stripped.isdigit():
+            try:
+                value = int(text)
+                if abs(value) >= _EPOCH_MS_THRESHOLD:
+                    value /= 1000.0
+                return datetime.fromtimestamp(value)
+            except (ValueError, OSError, OverflowError):
+                pass
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone().replace(tzinfo=None)
+            return parsed
+        except ValueError:
+            pass
+
+        for fmt in _SENT_AT_FORMATS:
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+
+    logger.debug("timeparse: could not parse sent_at %r; using fallback", raw)
+    return fallback

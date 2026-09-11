@@ -25,7 +25,7 @@ from vaelis.agenda.rules import snippet
 
 from .client import ChatlogClient, ChatlogUnavailable, ChatMessage
 from .config import CollectorConfig
-from .confirm import Candidate, Confirmer, HeuristicConfirmer
+from .confirm import Candidate, Confirmer, ConfirmContext, HeuristicConfirmer
 from .state import SeenStore, TalkerStore
 
 logger = logging.getLogger(__name__)
@@ -94,11 +94,68 @@ class ChatlogPipeline:
         self.service = service or get_service()
         self.seen = seen or SeenStore()
         self.talkers = talkers or TalkerStore()
-        self.confirmer = confirmer or HeuristicConfirmer(tier_of=self.config.tier_of)
+        self.confirmer = confirmer or self._default_confirmer()
+        # talker id → chatlog display name, resolved once, best-effort.
+        self._talker_names: Optional[dict[str, str]] = None
+
+    def _default_confirmer(self) -> Confirmer:
+        """Heuristic first, L2 model for the remainder.
+
+        The ordering is the cost + privacy discipline (a message the heuristic
+        can pin never leaves the machine). Construction is deliberately lazy and
+        fault-tolerant: if the quota pool / routing / model wiring is unavailable
+        we degrade to the heuristic alone rather than refusing to start. When the
+        model path is reached but has no usable source it returns ``None``, so
+        the message simply stays ``unresolved`` — never a made-up 9:00.
+        L1 is never involved (``ModelConfirmer.route`` enforces it).
+        """
+        heuristic = HeuristicConfirmer(tier_of=self.config.tier_of)
+        try:
+            from vaelis.quota.route import QuotaAwareCompleter
+            from vaelis.routing import L2_AGENDA
+
+            from .model_confirm import FallbackConfirmer, ModelConfirmer
+
+            model = ModelConfirmer(completer=QuotaAwareCompleter(), role=L2_AGENDA)
+        except Exception as exc:  # pragma: no cover - import/registration seam
+            logger.warning(
+                "chatlog: model fallback unavailable (%s); using heuristic only", exc
+            )
+            return heuristic
+        return FallbackConfirmer(primary=heuristic, fallback=model)
+
+    def _talker_name_map(self) -> dict[str, str]:
+        """Best-effort id → display-name map from chatlog's session list.
+
+        Cached for the pipeline's lifetime. Any failure (chatlog down, client
+        without the method) yields an empty map — the board falls back to the id
+        and nothing about collection changes.
+        """
+        if self._talker_names is not None:
+            return self._talker_names
+
+        mapping: dict[str, str] = {}
+        lister = getattr(self.client, "list_talker_sessions", None)
+        if callable(lister):
+            try:
+                for session in lister():
+                    session_id = getattr(session, "id", None)
+                    session_name = getattr(session, "name", None)
+                    if session_id and session_name:
+                        mapping[str(session_id)] = str(session_name)
+            except Exception as exc:  # best-effort; never block collection
+                logger.debug("chatlog: talker display-name lookup failed: %s", exc)
+        self._talker_names = mapping
+        return mapping
 
     # --- single message -----------------------------------------------------
 
-    def handle_message(self, message: ChatMessage, report: IngestReport) -> None:
+    def handle_message(
+        self,
+        message: ChatMessage,
+        report: IngestReport,
+        context: Optional[ConfirmContext] = None,
+    ) -> None:
         report.scanned += 1
 
         if not self.config.allows(message.talker):
@@ -127,7 +184,7 @@ class ChatlogPipeline:
             report.filtered_out += 1
             return
 
-        candidate = self.confirmer.confirm(message, hit)
+        candidate = self.confirmer.confirm(message, hit, context)
         if candidate is None:
             report.unresolved += 1
             return
@@ -135,6 +192,9 @@ class ChatlogPipeline:
         evidence = {
             "msg_id": message.msg_id,
             "talker": message.talker,
+            # Who said it — the board shows this ("谁说的"). Empty string means
+            # chatlog did not name the sender; we never substitute the talker id.
+            "sender": message.sender,
             "sent_at": message.sent_at,
             # Only the matched snippet is ever persisted or forwarded.
             "snippet": snippet(message.content),
@@ -145,6 +205,9 @@ class ChatlogPipeline:
             "tier": candidate.tier,
             "source_weight": candidate.weight,
         }
+        talker_name = context.talker_name if context is not None else None
+        if talker_name:
+            evidence["talker_name"] = talker_name
 
         target_id = self._find_change_target(candidate) if candidate.is_change else None
 
@@ -284,7 +347,10 @@ class ChatlogPipeline:
         else:
             days = [day]
 
+        name_map = self._talker_name_map()
+
         for talker in talkers:
+            talker_name = name_map.get(talker)
             for sweep_day in days:
                 try:
                     messages = self.client.fetch(talker, sweep_day)
@@ -295,8 +361,21 @@ class ChatlogPipeline:
                     )
                     continue
 
-                for message in messages:
-                    self.handle_message(message, report)
+                # ±1 neighbours within the same talker+day batch: "约一下" or
+                # "明天" only makes sense with the line before/after. Capped at
+                # one on each side and clipped by ``rules.snippet`` (ADR-0010
+                # narrow opening for WP-EXTRACT-CONTEXT).
+                for index, message in enumerate(messages):
+                    context = ConfirmContext(
+                        talker_name=talker_name,
+                        prev_snippet=snippet(messages[index - 1].content)
+                        if index > 0
+                        else None,
+                        next_snippet=snippet(messages[index + 1].content)
+                        if index + 1 < len(messages)
+                        else None,
+                    )
+                    self.handle_message(message, report, context)
 
         return report
 
