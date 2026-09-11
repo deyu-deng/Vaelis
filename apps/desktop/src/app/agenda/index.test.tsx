@@ -46,6 +46,69 @@ describe('AgendaView empty board (WP-A7-EMPTY)', () => {
     cleanup()
   })
 
+  it('shows the start–end span in the list and the sender in the detail', async () => {
+    const withEnd = {
+      created_at: '2026-09-10T00:00:00Z',
+      end_at: '2026-09-11T11:00:00',
+      id: 'e-end',
+      kind: 'meeting' as const,
+      source: 'wechat' as const,
+      start_at: '2026-09-11T09:00:00',
+      status: 'confirmed' as const,
+      title: '组会',
+      updated_at: '2026-09-10T00:00:00Z'
+    }
+    const openEnded = {
+      ...withEnd,
+      end_at: null,
+      evidence: { sender: '张老师', snippet: '明天上午九点组会', talker_name: '车辆2502' },
+      id: 'e-open',
+      title: '开题讨论'
+    }
+
+    getAgenda.mockResolvedValue([withEnd, openEnded])
+    $agendaEvents.set([withEnd, openEnded])
+    $agendaSelectedId.set('e-open')
+
+    render(<AgendaView onClose={() => {}} />)
+
+    // R-009: the list prints the span, and says so when the end is unwritten.
+    expect(await screen.findByText('09:00–11:00')).toBeTruthy()
+    expect(screen.getByText('09:00 · no end time')).toBeTruthy()
+
+    // The detail names who said it (evidence.sender + conversation name).
+    await waitFor(() => {
+      expect(screen.getByText('张老师 · 车辆2502')).toBeTruthy()
+    })
+    // …and the open-ended entry shows the honest end value.
+    expect(screen.getAllByText('no end time').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('falls back to unknown when the extractor could not name a sender', async () => {
+    const anonymous = {
+      created_at: '2026-09-10T00:00:00Z',
+      end_at: null,
+      evidence: { snippet: '改到三点' },
+      id: 'e-anon',
+      kind: 'task' as const,
+      source: 'wechat' as const,
+      start_at: '2026-09-11T15:00:00',
+      status: 'pending' as const,
+      title: '时间变更',
+      updated_at: '2026-09-10T00:00:00Z'
+    }
+
+    getAgenda.mockResolvedValue([anonymous])
+    $agendaEvents.set([anonymous])
+    $agendaSelectedId.set('e-anon')
+
+    render(<AgendaView onClose={() => {}} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Unknown')).toBeTruthy()
+    })
+  })
+
   it('keeps the Session collection entry visible when no events exist', async () => {
     render(<AgendaView onClose={() => {}} />)
 

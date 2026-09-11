@@ -1173,6 +1173,12 @@ export interface Translations {
     sourceLabel: string
     changeLabel: string
     evidenceLabel: string
+    /** R-009/R-020: end time is first-class; absent → say so, never guess. */
+    endLabel: string
+    noEnd: string
+    /** Who said it (evidence.sender); absent → `unknown`. */
+    senderLabel: string
+    unknown: string
     confirm: string
     dismiss: string
     confirmed: string

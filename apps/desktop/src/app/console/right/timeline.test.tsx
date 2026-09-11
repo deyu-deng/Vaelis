@@ -34,7 +34,7 @@ function dateAt(offsetDays: number, hour: number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(hour)}:00:00`
 }
 
-describe('Timeline', () => {
+describe('Timeline (day axis)', () => {
   afterEach(() => {
     cleanup()
   })
@@ -54,20 +54,32 @@ describe('Timeline', () => {
     expect(screen.getByText('event-b')).toBeTruthy()
   })
 
-  it('highlights pending rows with the pending tag and a leading dot', () => {
+  it('draws the 08:00–23:00 hour axis', () => {
+    render(<Timeline events={[event('a', dateAt(0, 9), { end_at: dateAt(0, 11) })]} />)
+
+    // Tick labels bracket the default window (the 08:00 block also prints its
+    // own start, hence the *All* queries).
+    expect(screen.getAllByText('08:00').length).toBeGreaterThan(0)
+    expect(screen.getByText('23:00')).toBeTruthy()
+  })
+
+  it('prints the start–end span on the block', () => {
+    render(<Timeline events={[event('s', dateAt(0, 9), { end_at: dateAt(0, 11) })]} />)
+
+    expect(screen.getByText('09:00–11:00')).toBeTruthy()
+  })
+
+  it('says the end is unwritten instead of inventing an hour', () => {
+    render(<Timeline events={[event('o', dateAt(0, 9))]} />)
+
+    expect(screen.getByText('no end time')).toBeTruthy()
+  })
+
+  it('keeps the pending tag on pending entries', () => {
     render(<Timeline events={[event('p', dateAt(0, 10), { status: 'pending' })]} />)
 
     expect(screen.getByText('pending')).toBeTruthy()
-    // The pending meta is wrapped in an amber span — the tag text is present.
     expect(screen.getByText('event-p')).toBeTruthy()
-  })
-
-  it('renders the clock time as the row lead', () => {
-    const at = dateAt(0, 8)
-
-    render(<Timeline events={[event('c', at)]} />)
-
-    expect(screen.getByText('08:00')).toBeTruthy()
   })
 })
 

@@ -556,9 +556,17 @@ export type AgendaSource = 'dingtalk' | 'manual' | 'timetable' | 'wechat'
 
 export interface AgendaEvidence {
   msg_id?: string
+  /**
+   * Who said it (WP-EXTRACT-CONTEXT puts this on evidence; empty means the
+   * extractor could not name a person — the board says "unknown" instead of
+   * passing the talker id off as a name).
+   */
+  sender?: string
   sent_at?: string
   snippet?: string
   talker?: string
+  /** Human-readable conversation name (group / contact), when chatlog has one. */
+  talker_name?: string
 }
 
 export interface AgendaPrevValue {

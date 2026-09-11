@@ -107,6 +107,24 @@ function clockOf(iso: string): string {
   return iso.length >= 16 ? iso.slice(11, 16) : iso
 }
 
+/**
+ * R-009: the list shows the span when the extractor wrote an end, and says so
+ * when it did not — an absent `end_at` is never rendered as a fake hour.
+ */
+function timeRangeLabel(event: AgendaEvent, a: Translations['agenda']): string {
+  const start = clockOf(event.start_at)
+
+  return event.end_at ? `${start}–${clockOf(event.end_at)}` : `${start} · ${a.noEnd}`
+}
+
+/** Who said it: `evidence.sender` (+ conversation name when chatlog has one). */
+function senderLabel(event: AgendaEvent, a: Translations['agenda']): string {
+  const sender = event.evidence?.sender?.trim() || a.unknown
+  const talkerName = event.evidence?.talker_name?.trim()
+
+  return talkerName ? `${sender} · ${talkerName}` : sender
+}
+
 function dayKeyOf(iso: string): string {
   return iso.slice(0, 10)
 }
@@ -327,7 +345,7 @@ export function AgendaView({ onClose }: AgendaViewProps) {
                           ]}
                         />
                       }
-                      meta={clockOf(event.start_at)}
+                      meta={timeRangeLabel(event, a)}
                       onSelect={() => setAgendaSelectedId(event.id)}
                       rowKey={event.id}
                       title={event.title}
@@ -433,8 +451,10 @@ function AgendaDetail({
         <PanelMeta
           rows={[
             { label: a.startLabel, value: event.start_at.replace('T', ' ') },
+            { label: a.endLabel, value: event.end_at ? event.end_at.replace('T', ' ') : a.noEnd },
             { label: a.kindLabel, value: a.kinds[event.kind] },
-            { label: a.sourceLabel, value: a.sources[event.source] }
+            { label: a.sourceLabel, value: a.sources[event.source] },
+            { label: a.senderLabel, value: senderLabel(event, a) }
           ]}
         />
       </header>
@@ -449,6 +469,9 @@ function AgendaDetail({
                 : []),
               ...(previous.start_at && previous.start_at !== event.start_at
                 ? [{ label: a.startLabel, value: `${previous.start_at.replace('T', ' ')} → ${event.start_at.replace('T', ' ')}` }]
+                : []),
+              ...(previous.end_at && previous.end_at !== event.end_at
+                ? [{ label: a.endLabel, value: `${previous.end_at.replace('T', ' ')} → ${event.end_at ? event.end_at.replace('T', ' ') : a.noEnd}` }]
                 : [])
             ]}
           />
