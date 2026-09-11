@@ -401,6 +401,100 @@ describe('buildToolView vaelis_secretary_ask (WP-G5 real JSON)', () => {
     expect(view.subtitle).toContain('refresh agenda')
   })
 
+  it('never says Asked 日程秘书 for a pending mutate_agenda call (WP-L1-MUTATE-CARD)', () => {
+    setRuntimeI18nLocale('zh')
+    const view = buildToolView(
+      part({
+        args: { intent: 'mutate_agenda', action: 'create', user_text: '帮我加明天下午三点开会' },
+        result: undefined,
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('记日程中')
+    expect(view.title).not.toContain('Asked')
+    expect(view.title).not.toContain('日程秘书')
+  })
+})
+
+describe('buildToolView vaelis_secretary_ask mutate_agenda (WP-L1-MUTATE-CARD, 裁定 27)', () => {
+  afterEach(() => {
+    setRuntimeI18nLocale('en')
+  })
+
+  it('create reads 已记下 with 标题 · 15:00 · 未写结束', () => {
+    setRuntimeI18nLocale('zh')
+    const view = buildToolView(
+      part({
+        args: { intent: 'mutate_agenda', action: 'create', user_text: '帮我加明天下午三点开会' },
+        result: {
+          ok: true,
+          intent: 'mutate_agenda',
+          action: 'create',
+          user_text: '帮我加明天下午三点开会',
+          event: { id: 'evt_1', title: '开会', start_at: '2026-09-12T15:00:00', end_at: null, status: 'confirmed' }
+        },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('success')
+    expect(view.title).toBe('已记下')
+    expect(view.subtitle).toBe('开会 · 15:00 · 未写结束')
+    // 裁定 27: a spoken order is done work — the dispatch wording must be gone.
+    expect(view.subtitle).not.toContain('日程秘书')
+  })
+
+  it('update reads 已改 with a real start–end span', () => {
+    setRuntimeI18nLocale('zh')
+    const view = buildToolView(
+      part({
+        args: { intent: 'mutate_agenda', action: 'update', event_id: 'evt_1' },
+        result: {
+          ok: true,
+          intent: 'mutate_agenda',
+          action: 'update',
+          event: { id: 'evt_1', title: '开会', start_at: '2026-09-12T15:00:00', end_at: '2026-09-12T16:00:00' }
+        },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('已改')
+    expect(view.subtitle).toBe('开会 · 15:00–16:00')
+  })
+
+  it('delete reads 已取消', () => {
+    setRuntimeI18nLocale('zh')
+    const view = buildToolView(
+      part({
+        args: { intent: 'mutate_agenda', action: 'delete', event_id: 'evt_1' },
+        result: { ok: true, intent: 'mutate_agenda', action: 'delete', deleted: true, title: '开会' },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('已取消')
+    expect(view.subtitle).toContain('开会')
+  })
+
+  it('keeps the C3 wording for refresh_agenda', () => {
+    const view = buildToolView(
+      part({
+        args: { intent: 'refresh_agenda', user_text: '明天的日常安排是什么' },
+        result: { ok: true, intent: 'refresh_agenda', agent: { id: 'agenda' } },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Asked 日程秘书')
+  })
+
   it('maps agent.id short name and lists agenda.events on refresh', () => {
     const view = buildToolView(
       part({

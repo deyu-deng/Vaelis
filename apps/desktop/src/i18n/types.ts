@@ -2146,6 +2146,13 @@ export interface Translations {
       statusDone: string
       /** WP-UI-NO-INTERNALS: one-line label for a failed tool row. */
       failedShort: string
+      /** 裁定 27: spoken add/update/cancel reads as done work, not a dispatch. */
+      mutate: {
+        create: string
+        delete: string
+        pending: string
+        update: string
+      }
       actions: {
         read: string
         reading: string

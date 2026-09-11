@@ -2546,6 +2546,12 @@ export const en: Translations = {
       statusRecovered: 'Recovered',
       statusDone: 'Done',
       failedShort: 'Tool did not succeed',
+      mutate: {
+        create: 'Logged',
+        update: 'Updated',
+        delete: 'Cancelled',
+        pending: 'Updating schedule'
+      },
       actions: {
         read: 'Read',
         reading: 'Reading',

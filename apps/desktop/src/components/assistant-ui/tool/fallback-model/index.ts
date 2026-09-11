@@ -708,6 +708,60 @@ function secretaryIntentLabel(intent: string): string {
   return intent.replace(/_/g, ' ')
 }
 
+/** Naive local ISO → `HH:MM` ('' when unparseable). */
+function mutateClock(iso: string): string {
+  return iso && iso.length >= 16 ? iso.slice(11, 16) : ''
+}
+
+function mutateEventRecord(result: Record<string, unknown>): Record<string, unknown> {
+  const event = result.event
+
+  return isRecord(event) ? event : {}
+}
+
+function mutateEventTitle(result: Record<string, unknown>, args: Record<string, unknown>): string {
+  const event = mutateEventRecord(result)
+
+  return (
+    firstStringField(event, ['title']) ||
+    firstStringField(result, ['title']) ||
+    firstStringField(args, ['title']) ||
+    ''
+  )
+}
+
+/**
+ * 裁定 27: a spoken add/update/cancel is DONE work, not a dispatch. The card
+ * must read 已记下 / 已改 / 已取消 — never "Asked 日程秘书", and never the
+ * `agenda_propose` pending-confirmation card (a spoken order is a human order).
+ * Failures fall through to the generic `failureRowLabel` one-liner.
+ */
+function mutateHeadline(
+  result: Record<string, unknown>,
+  args: Record<string, unknown>,
+  part: ToolPart
+): ToolTitleParts {
+  if (part.result === undefined || result.ok === false) {
+    return { title: translateNow('assistant.tool.mutate.pending') }
+  }
+
+  const action = firstStringField(result, ['action']) || firstStringField(args, ['action']) || 'create'
+  const key = action === 'update' || action === 'delete' ? action : 'create'
+
+  return { title: translateNow(`assistant.tool.mutate.${key}`) }
+}
+
+/** 标题 + `15:00–16:00`，或 `15:00 · 未写结束`（复用看板那套空结束文案）。 */
+function mutateSubtitleLine(result: Record<string, unknown>, args: Record<string, unknown>): string {
+  const event = mutateEventRecord(result)
+  const title = mutateEventTitle(result, args)
+  const start = mutateClock(firstStringField(event, ['start_at']) || '')
+  const end = mutateClock(firstStringField(event, ['end_at']) || '')
+  const span = !start ? '' : end ? `${start}–${end}` : `${start} · ${translateNow('agenda.noEnd')}`
+
+  return [title, span].filter(Boolean).join(' · ')
+}
+
 function secretaryRouteLabel(route: string): string {
   if (!route) {
     return ''
@@ -1150,6 +1204,11 @@ function toolSubtitle(
   }
 
   if (isSecretaryDispatchTool(toolName)) {
+    // 裁定 27: mutate_agenda 副标题 = 标题 + 起止（或「未写结束」）。
+    if (secretaryField(argsRecord, resultRecord, ['intent']) === 'mutate_agenda') {
+      return mutateSubtitleLine(resultRecord, argsRecord)
+    }
+
     const dead = secretaryDeadDoor(resultRecord)
     const target = secretaryTarget(argsRecord, resultRecord)
     const intent = secretaryIntentLabel(secretaryField(argsRecord, resultRecord, ['intent']))
@@ -1549,6 +1608,15 @@ function dynamicTitle(
   }
 
   if (isSecretaryDispatchTool(part.toolName)) {
+    // 裁定 27: mutate_agenda 是办妥的事，不是派工——标题必须是
+    // 已记下 / 已改 / 已取消，禁止 "Asking/Asked 日程秘书"。
+    if (
+      firstStringField(args, ['intent']) === 'mutate_agenda' ||
+      firstStringField(result, ['intent']) === 'mutate_agenda'
+    ) {
+      return mutateHeadline(result, args, part)
+    }
+
     const target = secretaryTarget(args, result)
     const action = verb('Asking', 'Asked')
 

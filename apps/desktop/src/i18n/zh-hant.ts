@@ -2418,6 +2418,12 @@ export const zhHant = defineLocale({
       statusRecovered: '已復原',
       statusDone: '完成',
       failedShort: '工具未成功',
+      mutate: {
+        create: '已記下',
+        update: '已改',
+        delete: '已取消',
+        pending: '記日程中'
+      },
       actions: {
         read: '已讀取',
         reading: '正在讀取',

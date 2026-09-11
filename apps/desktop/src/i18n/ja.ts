@@ -2488,6 +2488,12 @@ export const ja = defineLocale({
       statusRecovered: '回復しました',
       statusDone: '完了',
       failedShort: 'ツールが失敗しました',
+      mutate: {
+        create: '記録しました',
+        update: '更新しました',
+        delete: '取り消しました',
+        pending: '予定を記録中'
+      },
       actions: {
         read: '読み取り完了',
         reading: '読み取り中',

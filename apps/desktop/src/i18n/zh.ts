@@ -2704,6 +2704,12 @@ export const zh: Translations = {
       statusRecovered: '已恢复',
       statusDone: '完成',
       failedShort: '工具未成功',
+      mutate: {
+        create: '已记下',
+        update: '已改',
+        delete: '已取消',
+        pending: '记日程中'
+      },
       actions: {
         read: '已读取',
         reading: '正在读取',
