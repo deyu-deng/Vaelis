@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -54,6 +55,16 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import {
+  buildDevAutostartScript,
+  DEV_AUTOSTART_FILENAME,
+  mergeShellSettings,
+  readShellSettings,
+  shouldHideOnClose,
+  shouldQuitOnAllWindowsClosed,
+  startHiddenFromLaunch,
+  trayStrings
+} from './desktop-shell'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -793,6 +804,18 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+// Tray icon shown for the lifetime of the process. Closing the window hides it
+// instead of quitting (see the close handler in createWindow), so the tray is
+// the only way back to a hidden window and the only way to really quit.
+let tray = null
+// True once the user has parked the window in the tray. A boot that is still in
+// flight can fire `ready-to-show` afterwards, and its show() would yank the
+// window back out of the tray — this keeps a deliberate close closed.
+let windowParkedInTray = false
+// win.maximize() also SHOWS the window ("shows but does not focus"), so a
+// hidden autostart boot must not run it at creation time. Remember it here and
+// apply it the first time the window is actually shown instead.
+let pendingStartMaximize = false
 let hermesProcess = null
 let connectionPromise = null
 // True while connection-config:apply soft-rehomes the primary — suppresses the
@@ -2011,9 +2034,12 @@ function persistWindowState() {
   try {
     const { x, y, width, height } = mainWindow.getNormalBounds()
     fs.mkdirSync(path.dirname(DESKTOP_WINDOW_STATE_PATH), { recursive: true })
+    // Merge rather than overwrite: the tray/autostart flags live in this same
+    // file (it is the desktop's one settings document), and a resize must not
+    // delete them.
     writeFileAtomic(
       DESKTOP_WINDOW_STATE_PATH,
-      JSON.stringify({ x, y, width, height, isMaximized: mainWindow.isMaximized() }, null, 2)
+      JSON.stringify({ ...readWindowStateFileRaw(), x, y, width, height, isMaximized: mainWindow.isMaximized() }, null, 2)
     )
   } catch (err) {
     rememberLog(`[window-state] persist failed: ${err?.message || err}`)
@@ -2022,6 +2048,101 @@ function persistWindowState() {
 
 // resized/moved fire many times mid-drag on Linux; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
+
+// ─── Desktop shell settings (tray + autostart) ─────────────────────────────
+// These flags ride in window-state.json alongside the geometry — same file,
+// same read/write shape as every other desktop preference, so there is no
+// second settings store to keep in sync. The policy (defaults, merge rules) is
+// pure and unit-tested in desktop-shell.ts.
+
+function readWindowStateFileRaw() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DESKTOP_WINDOW_STATE_PATH, 'utf8'))
+
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function readShellSettingsState() {
+  return readShellSettings(readWindowStateFileRaw())
+}
+
+function writeShellSettings(patch) {
+  try {
+    fs.mkdirSync(path.dirname(DESKTOP_WINDOW_STATE_PATH), { recursive: true })
+    writeFileAtomic(DESKTOP_WINDOW_STATE_PATH, JSON.stringify(mergeShellSettings(readWindowStateFileRaw(), patch), null, 2), 'utf8')
+  } catch (err) {
+    rememberLog(`[shell] write settings failed: ${err?.message || err}`)
+  }
+}
+
+// Dev checkouts have no installer to own "launch at login", so the tray toggle
+// drops a hidden-window WScript launcher in the user's Startup folder instead —
+// the same pattern as the existing chatlog / aigw autostart scripts. Packaged
+// builds register with the OS through app.setLoginItemSettings.
+const STARTUP_FOLDER = IS_WINDOWS
+  ? path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
+  : null
+const DEV_DESKTOP_AUTOSTART_PATH = STARTUP_FOLDER ? path.join(STARTUP_FOLDER, DEV_AUTOSTART_FILENAME) : null
+// `npm run dev` brings up both the Vite dev server (5174) and Electron, which
+// is exactly how the desktop is started by hand. Run it through cmd so PATH
+// resolution of npm.cmd matches the user's shell.
+const DEV_DESKTOP_COMMAND = 'cmd /c npm run dev'
+
+/**
+ * Make the OS-side autostart artifacts match `enabled`. Safe to call on every
+ * launch: writing the script is idempotent, so a launcher deleted by hand while
+ * the setting is still ON comes back on the next boot.
+ */
+function syncAutostartArtifacts(enabled) {
+  if (IS_PACKAGED) {
+    try {
+      app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] })
+      rememberLog(`[autostart] login item openAtLogin=${enabled}`)
+    } catch (err) {
+      rememberLog(`[autostart] setLoginItemSettings failed: ${err?.message || err}`)
+    }
+
+    return
+  }
+
+  if (!IS_WINDOWS || !DEV_DESKTOP_AUTOSTART_PATH) {
+    rememberLog('[autostart] dev-mode autostart is Windows-only; skipped')
+    return
+  }
+
+  try {
+    if (enabled) {
+      fs.mkdirSync(path.dirname(DEV_DESKTOP_AUTOSTART_PATH), { recursive: true })
+      fs.writeFileSync(
+        DEV_DESKTOP_AUTOSTART_PATH,
+        buildDevAutostartScript({
+          workingDirectory: APP_ROOT,
+          command: DEV_DESKTOP_COMMAND,
+          environment: { HERMES_DESKTOP_START_HIDDEN: '1' }
+        }),
+        'utf8'
+      )
+      rememberLog(`[autostart] dev launcher written: ${DEV_DESKTOP_AUTOSTART_PATH}`)
+    } else if (fs.existsSync(DEV_DESKTOP_AUTOSTART_PATH)) {
+      fs.rmSync(DEV_DESKTOP_AUTOSTART_PATH, { force: true })
+      rememberLog(`[autostart] dev launcher removed: ${DEV_DESKTOP_AUTOSTART_PATH}`)
+    }
+  } catch (err) {
+    rememberLog(`[autostart] dev launcher write failed: ${err?.message || err}`)
+  }
+}
+
+/** Tray toggle → persist the preference, then make the OS agree with it. */
+function applyAutostart(enabled) {
+  writeShellSettings({ openAtLogin: enabled })
+  syncAutostartArtifacts(enabled)
+  // Re-read from disk so a failed write shows up as the checkbox flipping back
+  // instead of the menu claiming a setting that was never saved.
+  refreshTrayMenu()
+}
 
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
@@ -2258,6 +2379,17 @@ let updateInFlight = false
 // set, window-all-closed calls app.quit() on every platform so the process
 // actually dies and the hand-off script can proceed immediately.
 let isQuittingForHandoff = false
+
+// Set when the user really means to quit (tray "Quit Vaelis", or any app.quit()
+// path — see the before-quit handler). Without it the close handler would just
+// re-hide the window and the app would be unquittable. Typed loosely because
+// main.ts is the untyped Electron entry; the decision itself lives in the pure,
+// unit-tested shouldHideOnClose() / shouldQuitOnAllWindowsClosed() helpers.
+let isQuittingByUser = false
+
+// Cold-boot straight into the tray when the OS launcher (packaged: --hidden) or
+// the dev Startup script (HERMES_DESKTOP_START_HIDDEN=1) asks for it.
+const START_HIDDEN = startHiddenFromLaunch({ argv: process.argv, env: process.env })
 
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
@@ -7229,7 +7361,135 @@ function closePetOverlay() {
   petOverlayWindow = null
 }
 
-function createWindow() {
+// ─── Tray ──────────────────────────────────────────────────────────────────
+
+/** Bring the main window back from the tray, recreating it if it was destroyed. */
+function showMainWindow() {
+  windowParkedInTray = false
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+
+    return
+  }
+
+  // Maximize first: maximize() shows the window itself, so doing it after the
+  // show() would flash a restored-size frame before the maximize lands.
+  consumePendingStartMaximize()
+  focusWindow(mainWindow)
+}
+
+// Deferred counterpart of the maximize() in createWindow(): the user had the
+// window maximized last session and this launch started hidden, so restore that
+// the moment they actually ask to see the window.
+function consumePendingStartMaximize() {
+  if (!pendingStartMaximize) {
+    return
+  }
+
+  pendingStartMaximize = false
+
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMaximized()) {
+    mainWindow.maximize()
+  }
+}
+
+// Build the tray menu from the persisted settings. Rebuilt (not just once) so
+// the checkbox can never disagree with what actually got written to disk.
+function refreshTrayMenu() {
+  if (!tray) {
+    return
+  }
+
+  const labels = trayStrings(app.getLocale())
+  const { openAtLogin } = readShellSettingsState()
+
+  try {
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: labels.show, click: () => showMainWindow() },
+        { label: labels.openAtLogin, type: 'checkbox', checked: openAtLogin, click: item => applyAutostart(item.checked) },
+        { type: 'separator' },
+        {
+          label: labels.quit,
+          click: () => {
+            isQuittingByUser = true
+            app.quit()
+          }
+        }
+      ])
+    )
+  } catch (err) {
+    rememberLog(`[tray] menu build failed: ${err?.message || err}`)
+  }
+}
+
+// 16px is what the Windows notification area actually paints; the app icon is
+// 180px+, so downscale explicitly. A missing icon must never take the app down
+// — an empty image still gives a working (if invisible) tray.
+function trayIconImage() {
+  try {
+    const iconPath = getAppIconPath()
+
+    if (!iconPath) {
+      return nativeImage.createEmpty()
+    }
+
+    const image = nativeImage.createFromPath(iconPath)
+
+    if (image.isEmpty()) {
+      return nativeImage.createEmpty()
+    }
+
+    return IS_WINDOWS ? image.resize({ width: 16, height: 16 }) : image
+  } catch (err) {
+    rememberLog(`[tray] icon load failed: ${err?.message || err}`)
+
+    return nativeImage.createEmpty()
+  }
+}
+
+function createTray() {
+  if (tray) {
+    return
+  }
+
+  try {
+    tray = new Tray(trayIconImage())
+    tray.setToolTip(trayStrings(app.getLocale()).tooltip)
+    refreshTrayMenu()
+    rememberLog('[tray] ready')
+    // Left click is the "show me the window" gesture on Windows/Linux; macOS
+    // opens the menu on left click, which is the same menu.
+    tray.on('click', () => showMainWindow())
+  } catch (err) {
+    tray = null
+    rememberLog(`[tray] create failed: ${err?.message || err}`)
+  }
+}
+
+// Windows-only and once ever: on the first hide-to-tray, tell the user the app
+// is still running so a vanished window doesn't read as a crash.
+function maybeShowTrayBalloon() {
+  if (!tray || !IS_WINDOWS) {
+    return
+  }
+
+  if (readShellSettingsState().trayBalloonShown) {
+    return
+  }
+
+  writeShellSettings({ trayBalloonShown: true })
+
+  try {
+    const labels = trayStrings(app.getLocale())
+    tray.displayBalloon({ title: labels.balloonTitle, content: labels.balloonBody })
+  } catch (err) {
+    rememberLog(`[tray] balloon failed: ${err?.message || err}`)
+  }
+}
+
+function createWindow({ hidden = false }: { hidden?: boolean } = {}) {
   const icon = getAppIconPath()
   const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
@@ -7278,12 +7538,21 @@ function createWindow() {
     }
   }
 
-  if (savedWindowState?.isMaximized) {
+  // maximize() shows the window as a side effect, so on a hidden boot it is
+  // deferred to the first real show rather than skipped outright.
+  const startMaximized = savedWindowState?.isMaximized === true
+
+  if (startMaximized && !hidden) {
     mainWindow.maximize()
   }
 
+  pendingStartMaximize = startMaximized && hidden
+
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    // An autostart launch stays in the tray: the window and its renderer are
+    // live (the backend still connects), it just never becomes visible until
+    // the user picks "Show Vaelis" from the tray menu.
+    if (!hidden && !windowParkedInTray && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show()
     }
   })
@@ -7299,7 +7568,26 @@ function createWindow() {
   mainWindow.on('moved', schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+
+    if (!shouldHideOnClose({ isQuittingByUser, isQuittingForHandoff, hasTray: Boolean(tray) })) {
+      return
+    }
+
+    // Close parks the window in the tray instead of ending the process, so the
+    // Python backend plus every sidecar it spawned (chatlog, aigw) keep
+    // running. Only an explicit quit or an updater hand-off really closes.
+    event.preventDefault()
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      windowParkedInTray = true
+      mainWindow.hide()
+      rememberLog('[shell] window hidden to tray; backend keeps running')
+    }
+
+    maybeShowTrayBalloon()
+  })
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks
@@ -9896,12 +10184,12 @@ if (!_gotSingleInstanceLock) {
 
     if (url) {
       handleDeepLink(url)
-    } else if (mainWindow) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore()
-      }
-      mainWindow.focus()
     }
+
+    // A second launch is the user asking for the app: bring back a window that
+    // is parked in the tray (or gone), instead of leaving them staring at
+    // nothing because the process was already alive.
+    showMainWindow()
   })
 }
 
@@ -9926,7 +10214,12 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
-  createWindow()
+  createWindow({ hidden: START_HIDDEN })
+  createTray()
+
+  // Keep the OS launcher in sync with the persisted preference on every launch:
+  // a Startup script deleted by hand while the toggle is still ON comes back.
+  syncAutostartArtifacts(readShellSettingsState().openAtLogin)
 
   // Win/Linux cold start: the launching vaelis:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)
@@ -9936,14 +10229,12 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', () => {
-    // Recreate the primary window if it's gone. Guard on mainWindow directly
-    // (not just total window count) so a dock click still restores the main
-    // window when only secondary session windows remain open.
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow()
-    } else {
-      focusWindow(mainWindow)
-    }
+    // Recreate the primary window if it's gone, otherwise raise it — including
+    // when it is parked in the tray, so a dock click/taskbar click is the same
+    // gesture as the tray menu item. Guarded on mainWindow directly (not just
+    // total window count) so it still restores the main window when only
+    // secondary session windows remain open.
+    showMainWindow()
   })
 })
 
@@ -9971,6 +10262,24 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  // Any quit path — tray "Quit Vaelis", the macOS app menu, an updater
+  // hand-off — must be able to close windows for real. Flipping this here (not
+  // only in the tray handler) means the close handler can never turn a quit
+  // into a hide and strand an unquittable headless process.
+  isQuittingByUser = true
+
+  // Drop the notification-area icon explicitly so a Windows shell can't keep
+  // painting a dead tray entry.
+  if (tray) {
+    try {
+      tray.destroy()
+    } catch {
+      void 0
+    }
+
+    tray = null
+  }
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
@@ -10014,12 +10323,16 @@ app.on('before-quit', () => {
 
 app.on('window-all-closed', () => {
   // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) {
+  // the last window. Windows/Linux now do the same, because the tray (and the
+  // backend it keeps alive) has to outlive the window — closing the window
+  // hides it, so reaching here at all means the window was really destroyed.
+  //
+  // The exception is a hand-off to a detached updater / swap / uninstall
+  // script: the process MUST exit so the script can replace or remove the
+  // bundle and relaunch — without this the script's PID-wait spins to its full
+  // timeout and the user is left with an invisible app (or an uninstall that
+  // appears to do nothing). An explicit user quit must also really quit.
+  if (shouldQuitOnAllWindowsClosed({ isMac: IS_MAC, isQuittingByUser, isQuittingForHandoff, hasTray: Boolean(tray) })) {
     app.quit()
   }
 })
