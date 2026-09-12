@@ -5,19 +5,27 @@
 生成循环（B5 禁区）。早报不含完整工具日志（R3 口径）：只带改动率结论、待批项
 条数与额度健康，不逐条贴工具调用记录。
 
+WP-DT-DIGEST（裁定 28.1）在此基础上加了**一整天清单**：早报正文 = 当日清单 +
+统计段，20:00 计划后追加次日清单，开机晚了由看门狗补发一次（``morning_body``
+是两边共用的唯一组装函数）。清单是为了**手抄进手机日历**——每行一条、钟点在前、
+有起止就写起止，**绝不编造结束时间**，也不把没批的东西当成已安排。
+
 「L2 便宜模型生成」由 :mod:`vaelis.butler.polish` 提供可选改写（走 B3 额度池
 便宜源，便宜优先 + aigw 兜底），默认关闭；模板是永远在线的确定基线。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Optional
+import json
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Callable, Optional
 
+from vaelis.agenda import store
 from vaelis.agenda.dispatch import format_pending
 from vaelis.agenda.service import AgendaService, get_service
 from vaelis.agenda.stats import change_report
-from vaelis.agenda.store import DailyPlan
+from vaelis.agenda.store import DailyPlan, PlanItem
 from vaelis.quota.pool import QuotaPool, get_quota_pool
 
 _PLAN_STATUS_LABEL = {
@@ -26,6 +34,42 @@ _PLAN_STATUS_LABEL = {
     "confirmed": "已批",
     "dismissed": "已忽略",
 }
+
+# ── 清单（WP-DT-DIGEST）词表与常量 ───────────────────────────────────────────
+
+# events.kind 是冻结词表（meeting/ddl/class/task）；没列到的种类不写标签。
+_EVENT_KIND_LABELS = {
+    "meeting": "会议",
+    "task": "任务",
+    "ddl": "截止",
+    "class": "课",
+}
+# 计划项按其类型标：作息锚点 / 项目推进块（evidence.kind，见 agenda/planning.py）。
+_PLAN_ITEM_LABELS = {
+    "routine": "作息",
+    "project_block": "项目块",
+}
+_WEEKDAYS = "一二三四五六日"
+# "08:00–09:40" 正好 11 列；单点时间左对齐补空格，正文起始列两版一致。
+_TIME_COLUMN = 11
+
+# 早报标记文件：07:30 的 cron 与看门狗的开机补发共用一个（谁先发谁写）。
+DIGEST_STATE_FILENAME = "digest_state.json"
+
+
+def _as_day(value: Any) -> str:
+    """date / datetime / "YYYY-MM-DD..." → "YYYY-MM-DD"。"""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()[:10]
+
+
+def _clock(value: Any) -> str:
+    """ISO 时间戳 → HH:MM。空值返回空串（调用方据此判断「未写结束」）。"""
+    text = str(value or "")
+    return text[11:16] if len(text) >= 16 else text
 
 
 # ── data collection ─────────────────────────────────────────────────────────
@@ -78,6 +122,141 @@ def build_quota_alert(pool: Optional[QuotaPool] = None) -> dict[str, Any]:
     return {"alerts": alerts}
 
 
+# ── one-day digest (WP-DT-DIGEST) ────────────────────────────────────────────
+
+
+def _planned_items_for_digest(service: AgendaService, day: str) -> tuple[Optional[DailyPlan], list[PlanItem]]:
+    """该日的计划表头 + **可写进清单**的计划项。
+
+    只有 ``confirmed`` 计划的 items 才进清单；``evidence.kind == "event"`` 的
+    引用项一律跳过——events 段已经负责它们（同一个 ``event_id`` 只出现一次，
+    以事件为准），而没被 events 段收录只说明那条事件还是 ``pending``／已取消，
+    绝不能当成已安排推给手机。``pending`` 计划因此只贡献一个「计划待批」提示。
+    """
+    conn = store.connect(getattr(service, "db_path", None))
+    try:
+        plan = store.get_daily_plan(conn, day)
+        if plan is None or plan.status != "confirmed":
+            return plan, []
+        items = [
+            item
+            for item in store.list_plan_items(conn, plan.id)
+            if str((item.evidence or {}).get("kind") or "") != "event"
+        ]
+        return plan, items
+    finally:
+        conn.close()
+
+
+def build_day_digest(
+    service: Optional[AgendaService] = None,
+    *,
+    for_date: Any,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """一整天的清单数据：已确认事件 + 已批计划项 + 待确认条数。
+
+    纯函数、零 LLM、零网络（清单绝不进模型：钟点就是钟点）。``for_date`` 是
+    要抄进日历的那一天；``now`` 只用来决定标题写「今天」还是「明天」。
+    """
+    service = service or get_service()
+    when = now or datetime.now()
+    if when.tzinfo is not None:
+        when = when.replace(tzinfo=None)
+    day = _as_day(for_date)
+    target = date.fromisoformat(day)
+
+    events = [
+        event
+        for event in service.list_agenda(
+            datetime.combine(target, datetime.min.time()),
+            datetime.combine(target, datetime.max.time()).replace(microsecond=0),
+        )
+        if event.status == "confirmed"
+    ]
+    events.sort(key=lambda event: (event.start_at, event.id))
+
+    plan, plan_items = _planned_items_for_digest(service, day)
+    pending_count = sum(
+        1 for event in service.list_pending() if str(event.start_at)[:10] == day
+    )
+
+    relative = ""
+    if day == when.date().isoformat():
+        relative = "今天"
+    elif day == (when.date() + timedelta(days=1)).isoformat():
+        relative = "明天"
+    stamp = f"{target.strftime('%m-%d')}（周{_WEEKDAYS[target.weekday()]}）"
+
+    return {
+        "for_date": day,
+        "title": f"{relative} {stamp}".strip(),
+        "relative": relative,
+        "plan_status": plan.status if plan is not None else None,
+        "plan_pending": bool(plan is not None and plan.status == "pending"),
+        "events": events,
+        "plan_items": plan_items,
+        "pending_count": pending_count,
+    }
+
+
+# ── digest state: one marker, shared by the 07:30 cron and the catch-up ──────
+
+
+def digest_state_path() -> Path:
+    """``HERMES_HOME/vaelis/digest_state.json``（与看门狗同一套 home 解析）。"""
+    try:
+        from hermes_constants import get_hermes_home
+
+        root = get_hermes_home() / "vaelis"
+    except Exception:
+        root = Path.home() / ".hermes" / "vaelis"
+    return root / DIGEST_STATE_FILENAME
+
+
+def load_digest_state(path: Path | str | None = None) -> dict[str, Any]:
+    target = Path(path) if path else digest_state_path()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def save_digest_state(state: dict[str, Any], path: Path | str | None = None) -> Path:
+    target = Path(path) if path else digest_state_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2)
+    # Atomic write: temp file + rename, so a crash mid-write can never leave a
+    # half-written marker that would look like "already sent".
+    tmp = target.with_suffix(".tmp")
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(target)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return target
+
+
+def morning_sent_for(path: Path | str | None = None) -> Optional[str]:
+    """`morning_sent_for` 标记（当天已发的日期），没有则 ``None``。"""
+    value = load_digest_state(path).get("morning_sent_for")
+    return str(value) if value else None
+
+
+def mark_morning_sent(for_date: Any, path: Path | str | None = None) -> Path:
+    """记录「这一天的早报已经发出去了」——只有发送成功才调用。"""
+    state = load_digest_state(path)
+    state["morning_sent_for"] = _as_day(for_date)
+    return save_digest_state(state, path)
+
+
 def _morning_plan_label(plan: DailyPlan | dict[str, Any] | None) -> str:
     """empty / pending / confirmed / dismissed / 无 — last night's next-day plan."""
     if plan is None:
@@ -116,6 +295,92 @@ def format_morning(data: dict[str, Any]) -> str:
         lines.append("额度: %s" % summary)
 
     return "\n".join(lines)
+
+
+def format_day_digest(data: dict[str, Any]) -> str:
+    """一整天清单正文：每行一条、钟点在前，照着抄进手机日历就行。
+
+    有起止写 ``08:00–09:40``；**没有 ``end_at`` 就只写开始并标「未写结束」**，
+    不编 1 小时、不编 9:00。空日照样发，写明当天没有已确认的安排。
+    """
+    lines = ["[Vaelis] %s" % str(data.get("title") or data.get("for_date") or "")]
+    if data.get("plan_pending"):
+        lines[0] += "（计划待批，以下为已确认事件）"
+
+    rows = _digest_rows(data)
+    if rows:
+        lines.extend(_digest_line(row) for row in rows)
+    else:
+        relative = str(data.get("relative") or "")
+        lines.append("（%s没有已确认的安排）" % (relative or "当天"))
+
+    lines.append("—")
+    lines.append("待确认 %d 条（桌面看板处理）" % int(data.get("pending_count") or 0))
+    return "\n".join(lines)
+
+
+def _digest_rows(data: dict[str, Any]) -> list[tuple[str, Optional[str], str, str]]:
+    """事件 + 计划项合成一份按 ``start_at`` 排序的 ``(start, end, title, label)``。"""
+    rows: list[tuple[str, Optional[str], str, str]] = []
+    for event in data.get("events") or []:
+        rows.append(
+            (
+                event.start_at,
+                event.end_at,
+                event.title,
+                _EVENT_KIND_LABELS.get(event.kind, ""),
+            )
+        )
+    for item in data.get("plan_items") or []:
+        evidence = item.evidence if isinstance(item.evidence, dict) else {}
+        rows.append(
+            (
+                item.start_at,
+                item.end_at,
+                item.title,
+                _PLAN_ITEM_LABELS.get(str(evidence.get("kind") or ""), ""),
+            )
+        )
+    rows.sort(key=lambda row: (row[0] or "", row[2]))
+    return rows
+
+
+def _digest_line(row: tuple[str, Optional[str], str, str]) -> str:
+    start_at, end_at, title, label = row
+    start = _clock(start_at)
+    end = _clock(end_at) if end_at else ""
+    span = "%s–%s" % (start, end) if end else start
+    parts = [str(title)]
+    if label:
+        parts.append(label)
+    if not end:
+        parts.append("未写结束")
+    return "%-*s  %s" % (_TIME_COLUMN, span, " · ".join(parts))
+
+
+def morning_body(
+    now: Optional[datetime] = None,
+    *,
+    report: Optional[dict[str, Any]] = None,
+    service: Optional[AgendaService] = None,
+    pool: Optional[QuotaPool] = None,
+    transform_stats: Optional[Callable[[str], Optional[str]]] = None,
+) -> str:
+    """早报正文 = 当天清单 + 空行 + 统计段（清单在前）。
+
+    07:30 的 cron 与看门狗的开机补发**共用这一个组装函数**（不复制模板）。
+    ``transform_stats`` 是统计段的可选改写钩子（``VAELIS_BUTLER_POLISH``）：
+    它只拿得到统计段，永远碰不到清单里的钟点。
+    """
+    when = now or datetime.now()
+    data = report if report is not None else build_morning(service, pool, now=when)
+    stats = format_morning(data)
+    if transform_stats is not None:
+        rewritten = transform_stats(stats)
+        if rewritten:
+            stats = rewritten
+    digest = format_day_digest(build_day_digest(service, for_date=when.date(), now=when))
+    return "%s\n\n%s" % (digest, stats)
 
 
 def format_todo_digest(data: dict[str, Any]) -> str:

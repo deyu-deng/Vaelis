@@ -3,6 +3,10 @@
 由 ``scripts/vaelis/register_butler.py`` 复制到 ``HERMES_HOME/scripts/`` 并注册
 为每日 20:00 任务。stdout 为 JSON 结果，进 cron 输出留痕。
 
+正文 = 计划段（原有输出，一字不改）+ 空行 + **次日可抄进手机日历的清单**
+（WP-DT-DIGEST）。清单与计划共用同一个 ``agenda.db``：计划 ``pending``（等你批）
+时只列已确认事件并在标题行写明「计划待批」，绝不把没批的东西当成已安排推给手机。
+
 默认零 LLM。设 ``VAELIS_BUTLER_POLISH=1`` 时只把 ``summary`` 一段交给 L2
 便宜模型润色，**永不**打 L1。空计划推送必须含「明天没有日程，计划为空」。
 """
@@ -38,7 +42,10 @@ _bootstrap()
 
 
 def main() -> int:
+    from datetime import datetime
+
     from vaelis.agenda.planning import format_evening_plan_text, generate_evening_plan
+    from vaelis.butler.report import build_day_digest, format_day_digest
     from vaelis.notify import get_notifier
 
     plan = generate_evening_plan()
@@ -52,6 +59,11 @@ def main() -> int:
             summary = polished
 
     body = format_evening_plan_text(plan, summary=summary)
+
+    # 明天那份清单（计划待批则只列事件 + 标题行提示）。
+    now = datetime.now()
+    digest = format_day_digest(build_day_digest(for_date=plan.for_date, now=now))
+    body = f"{body}\n\n{digest}"
 
     notifier = get_notifier()
     sent = False

@@ -49,6 +49,9 @@ def _make(tmp_path, fail: bool, notifier: RecordingNotifier):
         state_path=tmp_path / "watchdog_state.json",
         heal_command=lambda: heal_calls.append(1),
         failure_threshold=3,
+        # WP-DT-DIGEST 的早报补发会给 notifier 多加一条消息，把这里的告警计数搅乱；
+        # 它自己有专测（tests/vaelis/test_day_digest.py），本文件只测健康巡检。
+        morning_catchup=False,
     )
     return watchdog, client, heal_calls
 
@@ -137,6 +140,8 @@ def test_sweep_results_are_notified_through_dispatcher(tmp_path):
         pipeline=pipeline,
         state_path=tmp_path / "watchdog_state.json",
         heal_command=lambda: None,
+        # 见 _make()：早报补发另有专测，这里不该多出一条消息。
+        morning_catchup=False,
     )
 
     result = watchdog.tick()
