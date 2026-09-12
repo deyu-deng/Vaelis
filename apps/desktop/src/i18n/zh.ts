@@ -2710,6 +2710,23 @@ export const zh: Translations = {
         delete: '已取消',
         pending: '记日程中'
       },
+      query: {
+        today: count => `今天的安排 · ${count} 条`,
+        tomorrow: count => `明天 · ${count} 条`,
+        week: count => `本周 · ${count} 条`,
+        date: (date, count) => `${date} · ${count} 条`,
+        pending: count => `待确认 · ${count} 条`,
+        viewing: '查看中',
+        empty: '没有安排',
+        more: count => `+${count}`,
+        pendingTail: count => `待确认 ${count}`
+      },
+      decide: {
+        confirmed: '已确认',
+        dismissed: '已忽略',
+        removed: '已忽略并移除',
+        pending: '处理中'
+      },
       actions: {
         read: '已读取',
         reading: '正在读取',

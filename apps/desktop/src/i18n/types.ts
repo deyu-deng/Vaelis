@@ -2153,6 +2153,25 @@ export interface Translations {
         pending: string
         update: string
       }
+      /** 裁定 28.4: spoken read-back of the agenda (`query_agenda`). */
+      query: {
+        date: (date: string, count: number) => string
+        empty: string
+        more: (count: number) => string
+        pending: (count: number) => string
+        pendingTail: (count: number) => string
+        today: (count: number) => string
+        tomorrow: (count: number) => string
+        viewing: string
+        week: (count: number) => string
+      }
+      /** 裁定 28.4: spoken confirm/dismiss of a pending entry (`decide_pending`). */
+      decide: {
+        confirmed: string
+        dismissed: string
+        pending: string
+        removed: string
+      }
       actions: {
         read: string
         reading: string

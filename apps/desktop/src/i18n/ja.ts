@@ -2494,6 +2494,23 @@ export const ja = defineLocale({
         delete: '取り消しました',
         pending: '予定を記録中'
       },
+      query: {
+        today: count => `今日の予定 · ${count} 件`,
+        tomorrow: count => `明日 · ${count} 件`,
+        week: count => `今週 · ${count} 件`,
+        date: (date, count) => `${date} · ${count} 件`,
+        pending: count => `未確認 · ${count} 件`,
+        viewing: '確認中',
+        empty: '予定なし',
+        more: count => `+${count}`,
+        pendingTail: count => `未確認 ${count}`
+      },
+      decide: {
+        confirmed: '確認しました',
+        dismissed: '無視しました',
+        removed: '無視して削除しました',
+        pending: '処理中'
+      },
       actions: {
         read: '読み取り完了',
         reading: '読み取り中',

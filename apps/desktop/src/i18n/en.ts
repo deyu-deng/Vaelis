@@ -2552,6 +2552,23 @@ export const en: Translations = {
         delete: 'Cancelled',
         pending: 'Updating schedule'
       },
+      query: {
+        today: count => `Today · ${count}`,
+        tomorrow: count => `Tomorrow · ${count}`,
+        week: count => `This week · ${count}`,
+        date: (date, count) => `${date} · ${count}`,
+        pending: count => `Pending · ${count}`,
+        viewing: 'Checking the agenda',
+        empty: 'Nothing scheduled',
+        more: count => `+${count}`,
+        pendingTail: count => `Pending ${count}`
+      },
+      decide: {
+        confirmed: 'Confirmed',
+        dismissed: 'Dismissed',
+        removed: 'Dismissed & removed',
+        pending: 'Deciding'
+      },
       actions: {
         read: 'Read',
         reading: 'Reading',

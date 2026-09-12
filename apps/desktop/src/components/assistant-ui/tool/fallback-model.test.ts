@@ -113,7 +113,9 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('error')
-    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com')
+    // WP-FE-TESTROT: the row label is host + path by design (see `hostnameOf`),
+    // so the page is identifiable — the assertion was the stale half.
+    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com/docs')
   })
 
   it('shows opened title on success', () => {
@@ -127,7 +129,7 @@ describe('buildToolView browser_navigate title', () => {
     )
 
     expect(view.status).toBe('success')
-    expect(view.title).toBe('Opened hermes-agent.nousresearch.com')
+    expect(view.title).toBe('Opened hermes-agent.nousresearch.com/docs')
   })
 })
 
@@ -628,5 +630,159 @@ describe('buildToolView vaelis_secretary_ask mutate_agenda (WP-L1-MUTATE-CARD, �
     expect(view.title).toBe('Asked 日程秘书')
     expect(view.subtitle).toContain('chatlog 未启动或 /health 失败，采集不通')
     expect(view.detail).toContain('chatlog 未启动或 /health 失败，采集不通')
+  })
+})
+
+describe('buildToolView vaelis_secretary_ask query_agenda (WP-SEC-VOCAB, 裁定 28.4)', () => {
+  afterEach(() => {
+    setRuntimeI18nLocale('en')
+  })
+
+  const event = (id: string, title: string, start: string, end: string | null, status = 'confirmed') => ({
+    id,
+    title,
+    start_at: start,
+    end_at: end,
+    kind: 'class',
+    status,
+    source: 'timetable'
+  })
+
+  const query = (result: Record<string, unknown>, args: Record<string, unknown> = {}) =>
+    buildToolView(
+      part({
+        args: { intent: 'query_agenda', user_text: '今天有什么', ...args },
+        result: { ok: true, intent: 'query_agenda', ...result },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+  it('titles today / tomorrow / week with the backend row count', () => {
+    setRuntimeI18nLocale('zh')
+    const today = query({ range: 'today', from: '2026-09-12', to: '2026-09-12', events: [event('1', '高数课', '2026-09-12T08:00:00', '2026-09-12T09:40:00')], pending: [] })
+
+    expect(today.title).toBe('今天的安排 · 1 条')
+
+    const tomorrow = query({ range: 'tomorrow', from: '2026-09-13', to: '2026-09-13', events: [], pending: [] })
+
+    expect(tomorrow.title).toBe('明天 · 0 条')
+    expect(tomorrow.subtitle).toBe('没有安排')
+
+    const week = query({ range: 'week', events: [event('1', 'a', '2026-09-12T08:00:00', null), event('2', 'b', '2026-09-13T08:00:00', null)], pending: [] })
+
+    expect(week.title).toBe('本周 · 2 条')
+  })
+
+  it('titles a date range from the backend `from` (MM-DD) and a pending range from pending.length', () => {
+    setRuntimeI18nLocale('zh')
+    const dated = query({ range: 'date', from: '2026-09-15', to: '2026-09-15', events: [event('1', '体检', '2026-09-15T09:00:00', null)], pending: [] })
+
+    expect(dated.title).toBe('09-15 · 1 条')
+
+    const pendingRange = query({ range: 'pending', events: [], pending: [event('1', '组会', '2026-09-12T10:00:00', null, 'pending')] })
+
+    expect(pendingRange.title).toBe('待确认 · 1 条')
+    expect(pendingRange.subtitle).toBe('10:00 组会')
+  })
+
+  it('previews three rows with start–end, truncates with +K, and tails pending', () => {
+    setRuntimeI18nLocale('zh')
+    const view = query({
+      range: 'today',
+      events: [
+        event('1', '高数课', '2026-09-12T08:00:00', '2026-09-12T09:40:00'),
+        event('2', '线代', '2026-09-12T10:00:00', null),
+        event('3', '英语', '2026-09-12T14:00:00', '2026-09-12T15:00:00'),
+        event('4', '班会', '2026-09-12T19:00:00', null)
+      ],
+      pending: [event('p1', '组会', '2026-09-12T20:00:00', null, 'pending'), event('p2', '汇报', '2026-09-12T21:00:00', null, 'pending')]
+    })
+
+    // 3 rows max, +1 for the fourth; a row without an end prints only its start.
+    expect(view.subtitle).toBe('08:00–09:40 高数课 / 10:00 线代 / 14:00–15:00 英语 +1 · 待确认 2')
+    // The card is an answer, not a dispatch.
+    expect(view.title).not.toContain('Asked')
+    expect(view.subtitle).not.toContain('未写结束')
+  })
+
+  it('reads 查看中 while the tool is still running', () => {
+    setRuntimeI18nLocale('zh')
+    const view = buildToolView(
+      part({ args: { intent: 'query_agenda', range: 'today' }, result: undefined, toolName: 'vaelis_secretary_ask' }),
+      ''
+    )
+
+    expect(view.title).toBe('查看中')
+  })
+})
+
+describe('buildToolView vaelis_secretary_ask decide_pending (WP-SEC-VOCAB, 裁定 28.4)', () => {
+  afterEach(() => {
+    setRuntimeI18nLocale('en')
+  })
+
+  const decide = (result: Record<string, unknown>, args: Record<string, unknown> = {}) =>
+    buildToolView(
+      part({
+        args: { intent: 'decide_pending', decision: 'confirm', ...args },
+        result: { ok: true, intent: 'decide_pending', ...result },
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+  it('confirm / dismiss / dismissed-and-removed each read as done', () => {
+    setRuntimeI18nLocale('zh')
+    const confirmed = decide({
+      decision: 'confirm',
+      event: { id: 'e1', title: '组会', start_at: '2026-09-12T10:00:00', end_at: null, status: 'confirmed' }
+    })
+
+    expect(confirmed.title).toBe('已确认 · 组会 10:00')
+
+    const dismissed = decide({
+      decision: 'dismiss',
+      event: { id: 'e1', title: '组会', start_at: '2026-09-12T10:00:00', end_at: null, status: 'pending' }
+    })
+
+    expect(dismissed.title).toBe('已忽略 · 组会 10:00')
+
+    const removed = decide({
+      decision: 'dismiss',
+      deleted: true,
+      event: { id: 'e2', title: '汇报', start_at: '2026-09-12T21:00:00', end_at: null, status: 'dismissed' }
+    })
+
+    expect(removed.title).toBe('已忽略并移除 · 汇报 21:00')
+  })
+
+  it('reads 处理中 while running and one-lines a failure with candidates expandable', () => {
+    setRuntimeI18nLocale('zh')
+    const running = buildToolView(
+      part({
+        args: { intent: 'decide_pending', decision: 'confirm' },
+        result: undefined,
+        toolName: 'vaelis_secretary_ask'
+      }),
+      ''
+    )
+
+    expect(running.title).toBe('处理中')
+
+    const ambiguous = decide({
+      ok: false,
+      error: '多条匹配',
+      candidates: [
+        { id: 'a', title: '组会', start_at: '2026-09-12T10:00:00' },
+        { id: 'b', title: '组会', start_at: '2026-09-12T15:00:00' }
+      ]
+    })
+
+    // 失败走 failureRowLabel：命令/内部正文不常驻，候选进可展开体。
+    expect(ambiguous.status).toBe('error')
+    expect(ambiguous.title).not.toBe('多条匹配')
+    expect(ambiguous.detail).toContain('多条匹配')
+    expect(ambiguous.detail).toContain('- 组会 · 2026-09-12T10:00:00\n- 组会 · 2026-09-12T15:00:00')
   })
 })

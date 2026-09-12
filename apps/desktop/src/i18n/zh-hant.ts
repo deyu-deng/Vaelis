@@ -2424,6 +2424,23 @@ export const zhHant = defineLocale({
         delete: '已取消',
         pending: '記日程中'
       },
+      query: {
+        today: count => `今天的安排 · ${count} 條`,
+        tomorrow: count => `明天 · ${count} 條`,
+        week: count => `本週 · ${count} 條`,
+        date: (date, count) => `${date} · ${count} 條`,
+        pending: count => `待確認 · ${count} 條`,
+        viewing: '查看中',
+        empty: '沒有安排',
+        more: count => `+${count}`,
+        pendingTail: count => `待確認 ${count}`
+      },
+      decide: {
+        confirmed: '已確認',
+        dismissed: '已忽略',
+        removed: '已忽略並移除',
+        pending: '處理中'
+      },
       actions: {
         read: '已讀取',
         reading: '正在讀取',

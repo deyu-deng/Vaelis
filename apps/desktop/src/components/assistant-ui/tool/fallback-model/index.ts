@@ -705,6 +705,14 @@ function secretaryIntentLabel(intent: string): string {
     return 'write briefing'
   }
 
+  if (intent === 'query_agenda') {
+    return 'query agenda'
+  }
+
+  if (intent === 'decide_pending') {
+    return 'decide pending'
+  }
+
   return intent.replace(/_/g, ' ')
 }
 
@@ -760,6 +768,159 @@ function mutateSubtitleLine(result: Record<string, unknown>, args: Record<string
   const span = !start ? '' : end ? `${start}–${end}` : `${start} · ${translateNow('agenda.noEnd')}`
 
   return [title, span].filter(Boolean).join(' · ')
+}
+
+/* -------------------------------------------------------------------------- */
+/* query_agenda / decide_pending cards (WP-SEC-VOCAB, 裁定 28.4)               */
+/*                                                                            */
+/* The backend answers these from the shared agenda store — the card just     */
+/* reads back what it returned. The frontend never works out "today", never   */
+/* filters pending itself, and never invents a clock.                          */
+/* -------------------------------------------------------------------------- */
+
+/** Rows the backend handed us (`result.events` / `result.pending` / `candidates`). */
+function agendaRows(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : []
+}
+
+function agendaRowTitle(row: Record<string, unknown>): string {
+  return firstStringField(row, ['title', 'name', 'summary']) || ''
+}
+
+function agendaClock(iso: string): string {
+  return iso && iso.length >= 16 ? iso.slice(11, 16) : ''
+}
+
+/** `HH:MM 标题` / `HH:MM–HH:MM 标题` — no end → start only (省字数，不写「未写结束」). */
+function agendaRowLine(row: Record<string, unknown>): string {
+  const start = agendaClock(firstStringField(row, ['start_at']) || '')
+  const end = agendaClock(firstStringField(row, ['end_at']) || '')
+  const when = !start ? '' : end ? `${start}–${end}` : start
+
+  return [when, agendaRowTitle(row)].filter(Boolean).join(' ')
+}
+
+/** How many rows the subtitle lists before switching to `+K`. */
+const QUERY_PREVIEW_ROWS = 3
+
+function queryRangeOf(result: Record<string, unknown>, args: Record<string, unknown>): string {
+  return (
+    firstStringField(result, ['range']) ||
+    firstStringField(args, ['range']) ||
+    (agendaRows(result.pending).length && !agendaRows(result.events).length ? 'pending' : 'today')
+  )
+}
+
+/**
+ * 裁定 28.4: a spoken read-back is an answer, not a dispatch — the title says
+ * which slice of the agenda was read and how many entries it holds. `N` is
+ * always the backend's own array length (pending range counts `pending`).
+ */
+function queryHeadline(
+  result: Record<string, unknown>,
+  args: Record<string, unknown>,
+  part: ToolPart
+): ToolTitleParts {
+  if (part.result === undefined) {
+    return { title: translateNow('assistant.tool.query.viewing') }
+  }
+
+  if (result.ok === false) {
+    return { title: translateNow('assistant.tool.query.viewing') }
+  }
+
+  const range = queryRangeOf(result, args)
+  const events = agendaRows(result.events)
+  const pending = agendaRows(result.pending)
+  const count = range === 'pending' ? pending.length : events.length
+
+  if (range === 'tomorrow') {
+    return { title: translateNow('assistant.tool.query.tomorrow', count) }
+  }
+
+  if (range === 'week') {
+    return { title: translateNow('assistant.tool.query.week', count) }
+  }
+
+  if (range === 'date') {
+    // `MM-DD` comes from the backend's own `from` — never derived client-side.
+    const from = firstStringField(result, ['from']) || firstStringField(args, ['date']) || ''
+    const short = from.length >= 10 ? from.slice(5, 10) : from
+
+    return short
+      ? { title: translateNow('assistant.tool.query.date', short, count) }
+      : { title: translateNow('assistant.tool.query.today', count) }
+  }
+
+  if (range === 'pending') {
+    return { title: translateNow('assistant.tool.query.pending', count) }
+  }
+
+  return { title: translateNow('assistant.tool.query.today', count) }
+}
+
+/** 前 3 条 `HH:MM 标题`（+K），尾部带 `· 待确认 M`；两列都空 → 没有安排。 */
+function querySubtitleLine(result: Record<string, unknown>, args: Record<string, unknown>): string {
+  if (result.ok === false) {
+    return ''
+  }
+
+  const range = queryRangeOf(result, args)
+  const events = agendaRows(result.events)
+  const pending = agendaRows(result.pending)
+  const rows = range === 'pending' ? pending : events
+  const lines = rows.slice(0, QUERY_PREVIEW_ROWS).map(agendaRowLine).filter(Boolean)
+  const overflow =
+    rows.length > QUERY_PREVIEW_ROWS ? translateNow('assistant.tool.query.more', rows.length - QUERY_PREVIEW_ROWS) : ''
+  const body = lines.length
+    ? [lines.join(' / '), overflow].filter(Boolean).join(' ')
+    : translateNow('assistant.tool.query.empty')
+  const pendingTail =
+    range !== 'pending' && pending.length
+      ? translateNow('assistant.tool.query.pendingTail', pending.length)
+      : ''
+
+  return [body, pendingTail].filter(Boolean).join(' · ')
+}
+
+/**
+ * 裁定 28.4: spoken confirm / dismiss of a pending entry. Success reads
+ * 「已确认 · 组会 10:00」/「已忽略 · 组会 10:00」; a dismissed pending that had no
+ * previous value is removed from the store, so the card says 已忽略并移除.
+ */
+function decideHeadline(
+  result: Record<string, unknown>,
+  args: Record<string, unknown>,
+  part: ToolPart
+): ToolTitleParts {
+  if (part.result === undefined || result.ok === false) {
+    return { title: translateNow('assistant.tool.decide.pending') }
+  }
+
+  const decision = firstStringField(result, ['decision']) || firstStringField(args, ['decision']) || 'confirm'
+  const verb =
+    decision === 'dismiss'
+      ? result.deleted === true
+        ? translateNow('assistant.tool.decide.removed')
+        : translateNow('assistant.tool.decide.dismissed')
+      : translateNow('assistant.tool.decide.confirmed')
+  const event = isRecord(result.event) ? result.event : {}
+  const target = [agendaRowTitle(event), agendaClock(firstStringField(event, ['start_at']) || '')]
+    .filter(Boolean)
+    .join(' ')
+
+  return { title: [verb, target].filter(Boolean).join(' · ') }
+}
+
+/** `candidates`（多条匹配）进可展开体；没有候选就不展开。 */
+function secretaryCandidateLines(result: Record<string, unknown>): string {
+  return agendaRows(result.candidates)
+    .map(row => {
+      const start = firstStringField(row, ['start_at']) || ''
+
+      return `- ${[agendaRowTitle(row), start].filter(Boolean).join(' · ')}`
+    })
+    .join('\n')
 }
 
 function secretaryRouteLabel(route: string): string {
@@ -1204,9 +1365,21 @@ function toolSubtitle(
   }
 
   if (isSecretaryDispatchTool(toolName)) {
+    const rawIntent = secretaryField(argsRecord, resultRecord, ['intent'])
+
     // 裁定 27: mutate_agenda 副标题 = 标题 + 起止（或「未写结束」）。
-    if (secretaryField(argsRecord, resultRecord, ['intent']) === 'mutate_agenda') {
+    if (rawIntent === 'mutate_agenda') {
       return mutateSubtitleLine(resultRecord, argsRecord)
+    }
+
+    // 裁定 28.4: query_agenda 念回前几条；decide_pending 的标题已带目标，
+    // 失败时 candidates 走可展开体（见 toolDetailText）。
+    if (rawIntent === 'query_agenda') {
+      return querySubtitleLine(resultRecord, argsRecord)
+    }
+
+    if (rawIntent === 'decide_pending') {
+      return ''
     }
 
     const dead = secretaryDeadDoor(resultRecord)
@@ -1266,6 +1439,15 @@ function toolDetailText(
   argsRecord: Record<string, unknown>,
   resultRecord: Record<string, unknown>
 ): string {
+  // 裁定 28.4: `decide_pending` 命中多条时不猜——候选列进可展开体给用户挑。
+  if (isSecretaryDispatchTool(part.toolName)) {
+    const candidates = secretaryCandidateLines(resultRecord)
+
+    if (candidates) {
+      return candidates
+    }
+  }
+
   if (part.toolName === 'browser_snapshot') {
     const snapshot = firstStringField(resultRecord, ['snapshot'])
 
@@ -1608,13 +1790,21 @@ function dynamicTitle(
   }
 
   if (isSecretaryDispatchTool(part.toolName)) {
+    const intent = firstStringField(args, ['intent']) || firstStringField(result, ['intent'])
+
     // 裁定 27: mutate_agenda 是办妥的事，不是派工——标题必须是
     // 已记下 / 已改 / 已取消，禁止 "Asking/Asked 日程秘书"。
-    if (
-      firstStringField(args, ['intent']) === 'mutate_agenda' ||
-      firstStringField(result, ['intent']) === 'mutate_agenda'
-    ) {
+    if (intent === 'mutate_agenda') {
       return mutateHeadline(result, args, part)
+    }
+
+    // 裁定 28.4: 查日程 / 确认忽略同样是当场答、当场办，不是派工。
+    if (intent === 'query_agenda') {
+      return queryHeadline(result, args, part)
+    }
+
+    if (intent === 'decide_pending') {
+      return decideHeadline(result, args, part)
     }
 
     const target = secretaryTarget(args, result)
