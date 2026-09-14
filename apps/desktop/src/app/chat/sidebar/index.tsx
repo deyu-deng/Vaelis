@@ -183,8 +183,10 @@ const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
 // these rows sit directly under the titlebar's drag strips (app-shell.tsx) with
 // only 6px clearance — drag regions win hit-testing over DOM, so the carve-out
 // keeps the top rows clickable (same idiom as USER_BUBBLE_BASE_CLASS).
+// `items-center`: same latent bug as AGENT_ROW — without it the fixed-size
+// nav icon stretch-aligns to the top of the 28px row.
 const NAV_BUTTON =
-  'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none'
+  'flex h-7 w-full items-center justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none'
 
 const NAV_BUTTON_ACTIVE =
   'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!'

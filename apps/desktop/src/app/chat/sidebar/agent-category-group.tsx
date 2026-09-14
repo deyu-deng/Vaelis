@@ -18,8 +18,11 @@ const CATEGORY_STATUS_DOT: Record<AgentStatus, string> = {
   working: 'bg-emerald-500'
 }
 
+// `items-center` is load-bearing: the row is a fixed 28px flex box, and without
+// it `align-items: stretch` pins fixed-size children to the top — the 8px status
+// dot then sits ~6px above the label's optical centre.
 const AGENT_ROW =
-  'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none'
+  'flex h-7 w-full items-center justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none'
 
 const AGENT_ROW_ACTIVE =
   'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!'
