@@ -1393,6 +1393,19 @@ export const ja = defineLocale({
       sectionGroups: 'グループ',
       sectionOfficial: '公式アカウント',
       excludeAllPendingOfficial: '未定の公式アカウントをすべて除外'
+    },
+    timetable: {
+      entry: '時間割を読み込む',
+      filterName: 'カレンダーファイル',
+      reading: 'カレンダーを読み込み中…',
+      courseCount: (count, courses) => `${count} コマ / ${courses} 科目`,
+      span: (first, last) => `${first} → ${last}`,
+      import: 'ボードに取り込む',
+      imported: count => `${count} コマを取り込みました`,
+      importedMeta: (name, count) => `${name} · ${count} コマ`,
+      loadFailed: 'カレンダーを読み込めませんでした',
+      importFailed: 'カレンダーを取り込めませんでした',
+      empty: 'このカレンダーにはコマがありません'
     }
   },
   console: {

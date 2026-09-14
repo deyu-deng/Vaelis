@@ -1348,6 +1348,19 @@ export const zhHant = defineLocale({
       sectionGroups: '群聊',
       sectionOfficial: '公眾號',
       excludeAllPendingOfficial: '排除全部待定公眾號'
+    },
+    timetable: {
+      entry: '匯入課表',
+      filterName: '課表檔案',
+      reading: '正在讀取課表…',
+      courseCount: (count, courses) => `${count} 次課 / ${courses} 門`,
+      span: (first, last) => `${first} → ${last}`,
+      import: '匯入到看板',
+      imported: count => `已匯入 ${count} 次課`,
+      importedMeta: (name, count) => `${name} · ${count} 次`,
+      loadFailed: '讀取課表失敗',
+      importFailed: '匯入課表失敗',
+      empty: '這個課表裡沒有課程'
     }
   },
   console: {

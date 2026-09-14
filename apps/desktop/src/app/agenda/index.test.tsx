@@ -3,6 +3,35 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $agendaEvents, $agendaLoading, $agendaError, $agendaSelectedId } from '@/store/agenda'
 
+const notify = vi.hoisted(() => vi.fn())
+const notifyError = vi.hoisted(() => vi.fn())
+
+vi.mock('@/store/notifications', () => ({
+  notify: (...args: unknown[]) => notify(...args),
+  notifyError: (...args: unknown[]) => notifyError(...args)
+}))
+
+const selectDesktopPaths = vi.hoisted(() => vi.fn())
+
+vi.mock('@/lib/desktop-fs', () => ({
+  selectDesktopPaths: (...args: unknown[]) => selectDesktopPaths(...args)
+}))
+
+const getTimetable = vi.hoisted(() => vi.fn())
+const previewTimetable = vi.hoisted(() => vi.fn())
+const importTimetable = vi.hoisted(() => vi.fn())
+
+vi.mock('./timetable/api', () => ({
+  getTimetable: (...args: unknown[]) => getTimetable(...args),
+  importTimetable: (...args: unknown[]) => importTimetable(...args),
+  previewTimetable: (...args: unknown[]) => previewTimetable(...args)
+}))
+
+// The board GETs the timetable status on mount in every test; without a
+// default the mocked call returns `undefined` and the mount effect throws.
+// `mockClear` (vi.clearAllMocks) keeps implementations, so this survives.
+getTimetable.mockResolvedValue(null)
+
 const getAgenda = vi.hoisted(() => vi.fn())
 const confirmAgendaEvent = vi.hoisted(() => vi.fn())
 const createAgendaEvent = vi.hoisted(() => vi.fn())
@@ -133,5 +162,135 @@ describe('AgendaView empty board (WP-A7-EMPTY)', () => {
     await waitFor(() => {
       expect(getTalkerCollection).toHaveBeenCalled()
     })
+  })
+})
+
+describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
+  const PREVIEW = {
+    calendar_name: '浙大课程表-2026-2027秋冬',
+    count: 225,
+    courses: 3,
+    first: '2026-09-14',
+    last: '2027-01-08',
+    sample: [
+      { title: '高数课', start_at: '2026-09-14T08:00:00', end_at: '2026-09-14T09:40:00', location: '东2-101' },
+      { title: '线代', start_at: '2026-09-14T10:00:00', end_at: null, location: '西1-203' }
+    ]
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $agendaEvents.set([])
+    $agendaLoading.set(false)
+    $agendaError.set(null)
+    $agendaSelectedId.set(null)
+    getAgenda.mockResolvedValue([])
+    getTalkerCollection.mockResolvedValue({ reviewComplete: false, talkers: [] })
+    getTimetable.mockResolvedValue(null)
+    selectDesktopPaths.mockResolvedValue(['C:/Users/x/ke.ics'])
+    previewTimetable.mockResolvedValue(PREVIEW)
+    importTimetable.mockResolvedValue({ ...PREVIEW, created: 225, unchanged: 0, updated: 0 })
+  })
+
+  afterEach(() => {
+    cleanup()
+  })
+
+  async function openPreview() {
+    render(<AgendaView onClose={() => {}} />)
+
+    const row = await screen.findByRole('button', { name: 'Import timetable' })
+
+    row.click()
+
+    await waitFor(() => {
+      expect(previewTimetable).toHaveBeenCalledWith('C:/Users/x/ke.ics')
+    })
+  }
+
+  it('filters for .ics, previews the pick, and writes nothing when cancelled', async () => {
+    await openPreview()
+
+    // Filter is handed to the existing Electron dialog — no new channel.
+    expect(selectDesktopPaths).toHaveBeenCalledWith({
+      filters: [{ name: 'Calendar files', extensions: ['ics', 'ical'] }],
+      multiple: false
+    })
+
+    // Copy is the backend's own fields, not a client-side count.
+    expect(screen.getByText('浙大课程表-2026-2027秋冬')).toBeTruthy()
+    expect(screen.getByText('225 sessions / 3 courses')).toBeTruthy()
+    expect(screen.getByText('2026-09-14 → 2027-01-08')).toBeTruthy()
+    expect(screen.getByText('08:00–09:40 高数课 · 东2-101')).toBeTruthy()
+    // A missing end time prints only the start — no invented clock.
+    expect(screen.getByText('10:00 线代 · 西1-203')).toBeTruthy()
+
+    screen.getByRole('button', { name: 'Cancel' }).click()
+
+    await waitFor(() => {
+      expect(screen.queryByText('浙大课程表-2026-2027秋冬')).toBeNull()
+    })
+    expect(importTimetable).not.toHaveBeenCalled()
+  })
+
+  it('does nothing at all when the picker is cancelled', async () => {
+    selectDesktopPaths.mockResolvedValue([])
+
+    render(<AgendaView onClose={() => {}} />)
+    ;(await screen.findByRole('button', { name: 'Import timetable' })).click()
+
+    await waitFor(() => {
+      expect(selectDesktopPaths).toHaveBeenCalled()
+    })
+    expect(previewTimetable).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Import into the board' })).toBeNull()
+  })
+
+  it('imports on confirm, reports the backend count, and refetches immediately', async () => {
+    await openPreview()
+
+    screen.getByRole('button', { name: 'Import into the board' }).click()
+
+    await waitFor(() => {
+      expect(importTimetable).toHaveBeenCalledWith('C:/Users/x/ke.ics')
+    })
+
+    await waitFor(() => {
+      expect(notify).toHaveBeenCalledWith({ message: 'Imported 225 sessions' })
+    })
+
+    // Once on mount, once right after the import — not after the 8s poll.
+    await waitFor(() => {
+      expect(getAgenda.mock.calls.length).toBeGreaterThanOrEqual(2)
+    })
+    await waitFor(() => {
+      expect(screen.queryByText('浙大课程表-2026-2027秋冬')).toBeNull()
+    })
+  })
+
+  it('shows the imported calendar beside the row only when the backend has one', async () => {
+    getTimetable.mockResolvedValue({
+      calendar_name: '浙大课程表-2026-2027秋冬',
+      event_count: 225,
+      imported_at: '2026-09-14T10:00:00',
+      path: 'C:/Users/x/ke.ics'
+    })
+
+    render(<AgendaView onClose={() => {}} />)
+
+    expect(await screen.findByText('浙大课程表-2026-2027秋冬 · 225 sessions')).toBeTruthy()
+  })
+
+  it('surfaces a failed preview as a notification without opening the dialog', async () => {
+    previewTimetable.mockRejectedValue(new Error('bad ics'))
+
+    render(<AgendaView onClose={() => {}} />)
+    ;(await screen.findByRole('button', { name: 'Import timetable' })).click()
+
+    await waitFor(() => {
+      expect(notifyError).toHaveBeenCalled()
+    })
+    expect(importTimetable).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Import into the board' })).toBeNull()
   })
 })

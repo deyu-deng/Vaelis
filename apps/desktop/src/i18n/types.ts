@@ -1213,6 +1213,20 @@ export interface Translations {
       sectionOfficial: string
       excludeAllPendingOfficial: string
     }
+    /** WP-ICS-BOARD (裁定 29.3): `.ics` timetable import, preview → confirm. */
+    timetable: {
+      courseCount: (count: number, courses: number) => string
+      empty: string
+      entry: string
+      filterName: string
+      import: string
+      importFailed: string
+      imported: (count: number) => string
+      importedMeta: (name: string, count: number) => string
+      loadFailed: string
+      reading: string
+      span: (first: string, last: string) => string
+    }
   }
   console: {
     /** R-012 sidebar agent taxonomy (PROJECTS / BUTLER / EVENTS / RESEARCH). */

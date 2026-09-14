@@ -1627,6 +1627,19 @@ export const zh: Translations = {
       sectionGroups: '群聊',
       sectionOfficial: '公众号',
       excludeAllPendingOfficial: '排除全部待定公众号'
+    },
+    timetable: {
+      entry: '导入课表',
+      filterName: '课表文件',
+      reading: '正在读取课表…',
+      courseCount: (count, courses) => `${count} 次课 / ${courses} 门`,
+      span: (first, last) => `${first} → ${last}`,
+      import: '导入到看板',
+      imported: count => `已导入 ${count} 次课`,
+      importedMeta: (name, count) => `${name} · ${count} 次`,
+      loadFailed: '读取课表失败',
+      importFailed: '导入课表失败',
+      empty: '这个课表里没有课程'
     }
   },
   console: {

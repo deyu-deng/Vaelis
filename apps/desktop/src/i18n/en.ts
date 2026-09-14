@@ -1450,6 +1450,19 @@ export const en: Translations = {
       sectionGroups: 'Groups',
       sectionOfficial: 'Official accounts',
       excludeAllPendingOfficial: 'Exclude all pending official accounts'
+    },
+    timetable: {
+      entry: 'Import timetable',
+      filterName: 'Calendar files',
+      reading: 'Reading the calendar…',
+      courseCount: (count, courses) => `${count} sessions / ${courses} courses`,
+      span: (first, last) => `${first} → ${last}`,
+      import: 'Import into the board',
+      imported: count => `Imported ${count} sessions`,
+      importedMeta: (name, count) => `${name} · ${count} sessions`,
+      loadFailed: 'Could not read the calendar',
+      importFailed: 'Could not import the calendar',
+      empty: 'That calendar has no sessions'
     }
   },
   console: {

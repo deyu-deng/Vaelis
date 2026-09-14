@@ -22,6 +22,7 @@ import {
   updateAgendaEvent
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import {
   $agendaError,
   $agendaEvents,
@@ -58,6 +59,14 @@ import {
 
 import { $talkerLoading, $talkerState, refreshTalkerCollection } from './talker/store'
 import { TalkerCollection } from './talker/talker-collection'
+import {
+  getTimetable,
+  importTimetable,
+  previewTimetable,
+  type TimetablePreview,
+  type TimetableSampleEvent,
+  type TimetableStatus
+} from './timetable/api'
 
 // Board refresh cadence. The spec allows up to 10s staleness (ADR-0008), and
 // polling keeps us off SSE/WebSocket plumbing for a single-user desktop.
@@ -125,6 +134,24 @@ function senderLabel(event: AgendaEvent, a: Translations['agenda']): string {
   return talkerName ? `${sender} · ${talkerName}` : sender
 }
 
+function timetableClock(iso: string): string {
+  return iso && iso.length >= 16 ? iso.slice(11, 16) : (iso ?? '')
+}
+
+/**
+ * WP-ICS-BOARD: one preview line — `HH:MM–HH:MM 标题 · 地点`. The backend hands
+ * us the fields; we print them and never fill in a missing end time ourselves.
+ */
+function timetableSampleLine(sample: TimetableSampleEvent): string {
+  const start = timetableClock(sample.start_at)
+  const end = sample.end_at ? timetableClock(sample.end_at) : ''
+  const when = start ? (end ? `${start}–${end}` : start) : ''
+  const head = [when, sample.title].filter(Boolean).join(' ')
+  const location = sample.location?.trim()
+
+  return location ? `${head} · ${location}` : head
+}
+
 function dayKeyOf(iso: string): string {
   return iso.slice(0, 10)
 }
@@ -180,6 +207,11 @@ export function AgendaView({ onClose }: AgendaViewProps) {
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [busyId, setBusyId] = useState<null | string>(null)
   const [collectionOpen, setCollectionOpen] = useState(false)
+  // WP-ICS-BOARD: `path` → preview draft; `preview: null` means "still reading"
+  // (the dialog shows PageLoader). Nothing is written until the user confirms.
+  const [timetable, setTimetable] = useState<null | { path: string; preview: null | TimetablePreview }>(null)
+  const [timetableBusy, setTimetableBusy] = useState(false)
+  const [timetableStatus, setTimetableStatus] = useState<null | TimetableStatus>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -212,6 +244,74 @@ export function AgendaView({ onClose }: AgendaViewProps) {
   useEffect(() => {
     void refreshTalkerCollection()
   }, [])
+
+  // WP-ICS-BOARD: the 「导入课表」 row's meta only appears once something was
+  // imported — never a placeholder.
+  useEffect(() => {
+    void getTimetable().then(setTimetableStatus)
+  }, [])
+
+  const handlePickTimetable = useCallback(async () => {
+    try {
+      const paths = await selectDesktopPaths({
+        filters: [{ name: a.timetable.filterName, extensions: ['ics', 'ical'] }],
+        multiple: false
+      })
+      const path = paths[0]
+
+      // Cancelled picker → nothing happens at all (no preview, no write).
+      if (!path) {
+        return
+      }
+
+      setTimetable({ path, preview: null })
+      setTimetableBusy(true)
+
+      try {
+        const preview = await previewTimetable(path)
+
+        setTimetable({ path, preview })
+      } catch (cause) {
+        // Preview is read-only: report and close, the agenda is untouched.
+        setTimetable(null)
+        notifyError(cause, a.timetable.loadFailed)
+      } finally {
+        setTimetableBusy(false)
+      }
+    } catch (cause) {
+      notifyError(cause, a.timetable.loadFailed)
+    }
+  }, [a])
+
+  const handleConfirmTimetable = useCallback(async () => {
+    if (!timetable?.preview) {
+      return
+    }
+
+    setTimetableBusy(true)
+
+    try {
+      const result = await importTimetable(timetable.path)
+
+      notify({ message: a.timetable.imported(result.count) })
+      setTimetable(null)
+      // Pull once immediately — the 8s board poll is not the point where the
+      // user should first see their timetable.
+      await refresh()
+      setTimetableStatus(await getTimetable())
+    } catch (cause) {
+      notifyError(cause, a.timetable.importFailed)
+    } finally {
+      setTimetableBusy(false)
+    }
+  }, [a, refresh, timetable])
+
+  // 「已导入过」的小字：只在 GET 真有数据时出现（进行中显示读取状态）。
+  const timetableMeta = timetableBusy
+    ? a.timetable.reading
+    : timetableStatus
+      ? a.timetable.importedMeta(timetableStatus.calendar_name, timetableStatus.event_count)
+      : undefined
 
   const grouped = useMemo(() => {
     const buckets = new Map<string, AgendaEvent[]>()
@@ -324,6 +424,15 @@ export function AgendaView({ onClose }: AgendaViewProps) {
                 rowKey="talker-collection"
                 title={a.collect.entry}
               />
+              <PanelListRow
+                active={timetable !== null}
+                icon="calendar"
+                key="timetable-import"
+                meta={timetableMeta}
+                onSelect={() => void handlePickTimetable()}
+                rowKey="timetable-import"
+                title={a.timetable.entry}
+              />
               {grouped.map(([dayKey, dayEvents]) => (
                 <div key={dayKey}>
                   <PanelSectionLabel className="px-2 pb-1 pt-2">{dayLabel(dayKey, a)}</PanelSectionLabel>
@@ -397,6 +506,59 @@ export function AgendaView({ onClose }: AgendaViewProps) {
               <DialogTitle>{a.collect.title}</DialogTitle>
             </DialogHeader>
             <TalkerCollection onClose={() => setCollectionOpen(false)} />
+          </DialogContent>
+        </Dialog>
+      ) : null}
+
+      {timetable ? (
+        <Dialog
+          onOpenChange={value => {
+            if (!value && !timetableBusy) {
+              setTimetable(null)
+            }
+          }}
+          open
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{a.timetable.entry}</DialogTitle>
+            </DialogHeader>
+
+            {timetable.preview ? (
+              <div className="space-y-2 text-[0.8rem]">
+                <div className="font-medium text-foreground">{timetable.preview.calendar_name}</div>
+                <div className="text-muted-foreground">
+                  {a.timetable.courseCount(timetable.preview.count, timetable.preview.courses)}
+                </div>
+                <div className="text-muted-foreground">{a.timetable.span(timetable.preview.first, timetable.preview.last)}</div>
+                {timetable.preview.sample.length > 0 ? (
+                  <div className="space-y-0.5 pt-1" data-testid="timetable-sample">
+                    {timetable.preview.sample.slice(0, 5).map((sample, index) => (
+                      <div className="truncate text-muted-foreground/80" key={`${sample.title}-${index}`}>
+                        {timetableSampleLine(sample)}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-muted-foreground">{a.timetable.empty}</div>
+                )}
+              </div>
+            ) : (
+              <PageLoader label={a.timetable.reading} />
+            )}
+
+            <DialogFooter>
+              <Button disabled={timetableBusy} onClick={() => setTimetable(null)} type="button" variant="outline">
+                {t.common.cancel}
+              </Button>
+              <Button
+                disabled={timetableBusy || !timetable.preview}
+                onClick={() => void handleConfirmTimetable()}
+                type="button"
+              >
+                {a.timetable.import}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       ) : null}
