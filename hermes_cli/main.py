@@ -5345,6 +5345,58 @@ def _try_redownload_electron_dist(project_root: Path, env: dict) -> bool:
     return _redownload_electron_dist(project_root, env, mirror=_ELECTRON_FALLBACK_MIRROR)
 
 
+def _stop_processes_holding_node_modules(project_root: Path) -> list[int]:
+    """WP-LAUNCH-EBUSY: terminate any leftover electron-builder / node / npm
+    child process holding a Windows handle on
+    ``node_modules/electron/dist/v8_context_snapshot.bin`` so the next npm
+    install + electron-builder pack can succeed.
+
+    Returns the list of PIDs killed (also useful for the caller's log line).
+    POSIX lets you unlink a running binary, so this is a no-op there.
+    """
+    if sys.platform != "win32":
+        return []
+    killed: list[int] = []
+    electron_dir = project_root / "node_modules" / "electron" / "dist"
+    if not electron_dir.exists():
+        return []
+    try:
+        import subprocess as _sp
+        # tasklist /FI "WINDOWTITLE eq ..." won't find these; query by image
+        # name + scan for any node.exe whose command line touches our
+        # electron dir or app's package.json. Cheap enough — node.exe count
+        # on a workstation is small.
+        ps = _sp.run(
+            ["wmic", "process", "where", "name='node.exe'",
+             "get", "ProcessId,CommandLine", "/format:CSV"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except Exception:
+        return []
+    for line in ps.stdout.splitlines()[1:]:
+        if not line.strip():
+            continue
+        try:
+            pid_part, *rest = line.split(",", 1)
+            pid = int(pid_part.strip())
+            cmdline = (rest[0] if rest else "").lower()
+        except (ValueError, IndexError):
+            continue
+        if "electron" not in cmdline and "npm" not in cmdline:
+            continue
+        if "node_modules/electron" not in cmdline and "node_modules\\electron" not in cmdline:
+            continue
+        try:
+            _sp.run(
+                ["taskkill", "/PID", str(pid), "/F", "/T"],
+                capture_output=True, timeout=5, check=False,
+            )
+            killed.append(pid)
+        except Exception:
+            pass
+    return killed
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     """Terminate any running desktop app executing from this build's ``release``
     dir so a rebuild can replace its (otherwise locked) executable.
@@ -5683,8 +5735,21 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
+            # WP-LAUNCH-EBUSY: a previous npm install / electron-builder run can
+            # leave a transient Windows handle on
+            # node_modules/electron/dist/v8_context_snapshot.bin, surfacing as
+            # EBUSY on the next run. Force-close any leftover electron-builder /
+            # node / npm child process and retry once after a short pause.
+            _stop_processes_holding_node_modules(PROJECT_ROOT)
             nixos_env = _nixos_build_env()
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
+            if install_result.returncode != 0 and "EBUSY" in (install_result.stderr or ""):
+                # Transient Windows file lock — wait 5s and retry once.
+                import time as _time
+                _time.sleep(5)
+                _stop_processes_holding_node_modules(PROJECT_ROOT)
+                print("  ⚠ npm install hit EBUSY; waited 5s and retrying once.")
+                install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 if not _electron_pkg_staged_missing_dist(PROJECT_ROOT):
                     print("✗ Desktop dependency install failed")
