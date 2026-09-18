@@ -100,7 +100,18 @@ class AgendaService:
         *,
         include_cancelled: bool = False,
     ) -> list[Event]:
-        """Default window is today 00:00 through tomorrow 23:59:59."""
+        """Default window is today 00:00 through tomorrow 23:59:59.
+
+        Dedupes by event.id after the ordering pass (WP-AXIS-INSIGHT root
+        cause fix): upstream callers sometimes append the same event twice
+        (e.g. when a day-window query overlaps with the default today+tomorrow
+        window) and the SQL boundary comparison would pass both copies
+        through. Frontend dedupe is one line of defense; this is the root
+        — the SQL boundary *does* pass `2026-09-16T11:30:00 >= 2026-09-17T00:00:00`
+        = False, so duplicates in real DBs are not the SQLite fault the user
+        suspected, but the dedupe is still the right safety. First occurrence
+        wins; ordering from `_order_by_confirmed_plans` is preserved.
+        """
         if start_from is None and start_to is None:
             today = datetime.now().date()
             start_from = datetime.combine(today, datetime.min.time())
@@ -112,7 +123,15 @@ class AgendaService:
                 start_to=start_to,
                 include_cancelled=include_cancelled,
             )
-            return self._order_by_confirmed_plans(conn, events)
+            ordered = self._order_by_confirmed_plans(conn, events)
+            seen_ids: set[str] = set()
+            deduped: list[Event] = []
+            for event in ordered:
+                if event.id in seen_ids:
+                    continue
+                seen_ids.add(event.id)
+                deduped.append(event)
+            return deduped
 
     def get(self, event_id: str) -> Event:
         with self._conn() as conn:

@@ -199,6 +199,33 @@ def test_default_window_covers_today_and_tomorrow(svc):
     assert titles == ["今天", "明天"]
 
 
+def test_list_agenda_dedupes_duplicate_event_ids(svc, monkeypatch):
+    """WP-AXIS-INSIGHT root-cause fix (service layer).
+
+    ``events.id`` is PRIMARY KEY so the SQL layer can't legitimately produce
+    duplicates — but defense-in-depth matters because upstream callers
+    sometimes append the same Event twice (an ``/api/agenda`` payload that
+    concatenates a default-window and a day-window query, for example).
+    Patch ``_order_by_confirmed_plans`` to return the same id twice, then
+    assert ``list_agenda`` keeps only the first occurrence.
+    """
+    today = datetime.now().date()
+    base = datetime.combine(today, datetime.min.time()).replace(hour=9)
+    first = svc.create_manual(title="上午课", start_at=base)
+
+    def _double(_self, _conn, events):
+        # Same Event object appended twice (first occurrence wins by design).
+        return list(events) + list(events)
+
+    monkeypatch.setattr(
+        "vaelis.agenda.service.AgendaService._order_by_confirmed_plans", _double
+    )
+
+    rows = svc.list_agenda()
+    assert [r.id for r in rows] == [first.id]
+    assert len(rows) == 1
+
+
 def test_update_manual_rejects_protected_fields(svc):
     event = svc.create_manual(title="自习", start_at="2026-08-25T19:00:00")
     with pytest.raises(AgendaValidationError):
