@@ -1,0 +1,28 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\xgbc\.workbuddy\binaries\python\envs\vaelis-test\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Projects\Vaelis\Code
+configfile: pyproject.toml
+plugins: anyio-4.14.2
+collecting ... collected 18 items
+
+tests/vaelis/test_app_token.py::test_load_or_mint_returns_existing_single_line_token PASSED [  5%]
+tests/vaelis/test_app_token.py::test_load_or_mint_mints_when_file_missing PASSED [ 11%]
+tests/vaelis/test_app_token.py::test_load_or_mint_is_idempotent PASSED   [ 16%]
+tests/vaelis/test_app_token.py::test_load_or_mint_strips_whitespace PASSED [ 22%]
+tests/vaelis/test_app_token.py::test_verify_token_matches_only_equal_strings PASSED [ 27%]
+tests/vaelis/test_app_token.py::test_agenda_accepts_app_token_via_dedicated_header PASSED [ 33%]
+tests/vaelis/test_app_token.py::test_agenda_accepts_app_token_via_bearer PASSED [ 38%]
+tests/vaelis/test_app_token.py::test_agenda_rejects_wrong_token PASSED   [ 44%]
+tests/vaelis/test_app_token.py::test_agenda_rejects_missing_token PASSED [ 50%]
+tests/vaelis/test_app_token.py::test_agenda_accepts_spa_session_token_unchanged PASSED [ 55%]
+tests/vaelis/test_app_token.py::test_status_path_is_public_and_still_versioned PASSED [ 61%]
+tests/vaelis/test_app_token.py::test_lan_gate_refuses_when_mint_failed PASSED [ 66%]
+tests/vaelis/test_app_token.py::test_lan_gate_refuses_for_unscoped_hostname PASSED [ 72%]
+tests/vaelis/test_app_token.py::test_lan_gate_passes_when_token_present PASSED [ 77%]
+tests/vaelis/test_app_token.py::test_lan_gate_does_not_touch_loopback_when_token_missing PASSED [ 83%]
+tests/vaelis/test_app_token.py::test_get_app_token_indirection_reads_module_state PASSED [ 88%]
+tests/vaelis/test_app_token.py::test_lan_gate_for_dual_stack_ip_literal_with_token_present PASSED [ 94%]
+tests/vaelis/test_app_token.py::test_lan_gate_downgrade_message_mentions_writable_check PASSED [100%]
+
+============================= 18 passed in 3.26s ==============================

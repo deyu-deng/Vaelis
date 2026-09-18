@@ -1,0 +1,44 @@
+# ARCH-UI-MASTER §3.5 — fail the PR if Agents resurrect banned UI/API files.
+# Fast: filesystem pytest + node-env vitest (no full desktop build).
+
+name: Architecture gates
+
+on:
+  push:
+    branches: [main, master, windows]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  arch-gates:
+    name: Frontend + backend architecture guards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be9510aaa06d70443c817c1e7e5c3e64e  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python test deps
+        run: pip install pytest==9.0.2
+
+      - name: Backend arch guard
+        run: python -m pytest tests/vaelis/test_console_arch_guard.py -q --basetemp=.pytest-run
+
+      - name: Setup Node.js
+        uses: actions/setup-node@0a44ba7841729c0fd30e6440a8344e1f727b5b64  # v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install workspace deps
+        run: npm ci
+
+      - name: Frontend arch guard
+        working-directory: apps/desktop
+        run: npm run test:arch
