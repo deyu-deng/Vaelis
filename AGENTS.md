@@ -1393,29 +1393,27 @@ them into invariants before re-requesting review.
 
 ## Documentation Discipline
 
-Docs live in `docs/` — the **single source of truth** (the former top-level
-`Docs/` mirror has been merged in and replaced by a pointer file; do not
-create documents outside `Code/docs/`). The layout is Diátaxis-style
-(`adr/`, `specs/`, `runbooks/`, `reference/`, `audit/`, `templates/`,
-`plans/`, `archive/`, `vaelis/north_star/`). Four rules keep the tree from
-rotting again:
+**项目级文档真源不在本仓，在 `D:\Projects\Vaelis\Docs\`**（平铺目录，索引 = `Docs/README.md`，
+纪律 = 其 §0）。那里登记排期、需求、裁定、验收与交接；本仓 `docs/` 只剩 `docs/vaelis/README.md`
+一个指针文件（历史上曾按 Diátaxis 建过 `adr/ specs/ runbooks/ …` 树，内容已整体迁出到上面的
+`Docs/`，树本身随 `.git` 事故清空）。**不要在本仓 `docs/` 下新建项目级文档**；实现级细节
+（模块说明、运行手册）若确需随代码走，才写进本仓，并在 `Docs/README.md` 挂一行。
+
+四条防腐规则（对两个目录同时生效）：
 
 1. **New docs must use a template.** Any new document starts from
-   `docs/templates/`; do not invent ad-hoc formats or drop files at random
+   `Docs/*-template.md`; do not invent ad-hoc formats or drop files at random
    locations.
-2. **Every doc must be registered.** Any doc added, renamed, or moved inside
-   `docs/` must get a row in `docs/INDEX.md` (the one canonical registry).
-   The pre-commit hook `scripts/git-hooks/pre-commit` (install with
-   `python scripts/install_arch_hooks.py`) runs `scripts/check-docs.sh` plus
-   `scripts/check_arch_gates.py` (ARCH-UI-MASTER §3.5: no resurrected
-   LeftRail/service.py). If the hook blocks you: either merge into an
-   existing file or fix the architecture gate — do not bypass with
-   `--no-verify`. GitHub Actions `arch-gates.yml` re-runs the same gates.
-3. **Outdated docs must be absorbed, then deleted or archived.** Before
-   removing an outdated doc, fold any still-useful content (checklists,
-   glossaries, requirements) into the active doc set; then delete or archive
-   the original. Never leave stale copies lying around "just in case".
-4. **No accumulation without cleanup.** Every new doc is a debt: prefer
-   updating an existing doc over creating a new one, and when you create one,
-   delete or archive something it supersedes. If you cannot justify the new
-   file, don't create it.
+2. **Every doc must be registered.** Anything added, renamed, or moved gets a
+   row in `Docs/README.md`（唯一索引）。`scripts/check-docs.sh` + `scripts/check_arch_gates.py`
+   （ARCH-UI-MASTER §3.5：禁复活 LeftRail/service.py）仍是**可选**闸门：
+   `python scripts/install_arch_hooks.py` 才会装进 `.git/hooks/`（当前**未安装**，
+   所以别把 hook 挡住当成别人的错）。若闸门挡住你：merge 进已有文件或修架构闸门，
+   不要 `--no-verify` 绕过。GitHub Actions `arch-gates.yml` 跑同一套闸门。
+3. **Outdated docs are absorbed, then deleted.** Before removing an outdated doc,
+   fold any still-useful content (checklists, glossaries, requirements) into the
+   active doc set, then **delete the original — 不归档**。2026-09-19 已按此把 `Docs/`
+   从 238 份砍到 100 份。Never leave stale copies lying around "just in case".
+4. **No accumulation without cleanup.** 一次性任务书（`AGENT-TASK-*` / `PROMPT-*`）在合入并
+   验收后**当场删除**，结论写进 `Docs/PROGRESS.md` 一行。 prefer updating an existing doc over
+   creating a new one; if you cannot justify the new file, don't create it.
