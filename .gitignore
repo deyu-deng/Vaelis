@@ -185,9 +185,11 @@ DataDefault.doubaoagent_mode*
 .secv-*.log
 .secv-*.json
 .p0hyg-*.txt
-# Stray `.git/HEAD` file accidentally copied to repo root during a prior
-# corruption recovery. Real git HEAD lives in `.git/HEAD` only — never here.
-/HEAD
+# 警告：仓库根**绝不**允许出现名为 HEAD 的文件（真实 HEAD 只在 .git/HEAD）。
+# 2026-09-07 修复事故时曾误建一个，它让每条 `git … HEAD`（含每日 bundle 任务）
+# 报 "ambiguous argument: both revision and filename"，而且当时这里有一条 `/HEAD`
+# 忽略规则把它藏了两周，git status 完全看不见。规则已删；再遇到直接删文件，
+# 不要重新加忽略。
 # Electron dev-server scratch log (npm run dev). Lives in apps/desktop/ but
 # is build/runtime output, not source.
 /apps/desktop/desktop_dev.log
