@@ -22,11 +22,11 @@ __pycache__/
 .pip-cache/
 .uv-cache/
 compose.hermes.local.yml
-export*
+/export*            # 只忽略仓库根的导出件；曾写作 `export*`，会连带吞掉 skills/**/export-*.md 等真源码
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
-data/
+/data/               # 只忽略仓库根运行数据；曾写作 `data/`，会吞掉 website/src/data/ 这类真源码
 .pytest_cache/
 test_durations.json
 .pytest-cache/
