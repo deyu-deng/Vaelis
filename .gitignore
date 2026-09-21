@@ -170,8 +170,8 @@ apps/desktop/src/**/*.js
 .pytest-run/
 .pytest-*/
 db_storage/
-# leaked agent-workspace paths (never source)
-C*UsersxgbcAppData*
+# leaked agent-workspace paths (never source) —— 通用写法，不把本机用户名写进仓库
+C*Users*AppData*
 DataDefault.doubaoagent_mode*
 
 ## WP-P0-HYGIENE-2: session-scoped test/agent artifacts

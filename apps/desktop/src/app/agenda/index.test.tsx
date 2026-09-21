@@ -269,7 +269,7 @@ describe('AgendaView empty board (WP-A7-EMPTY)', () => {
 
 describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
   const PREVIEW = {
-    calendar_name: '浙大课程表-2026-2027秋冬',
+    calendar_name: '课程表-2026-2027秋冬',
     count: 225,
     courses: 3,
     first: '2026-09-14',
@@ -320,7 +320,7 @@ describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
     })
 
     // Copy is the backend's own fields, not a client-side count.
-    expect(screen.getByText('浙大课程表-2026-2027秋冬')).toBeTruthy()
+    expect(screen.getByText('课程表-2026-2027秋冬')).toBeTruthy()
     expect(screen.getByText('225 sessions / 3 courses')).toBeTruthy()
     expect(screen.getByText('2026-09-14 → 2027-01-08')).toBeTruthy()
     expect(screen.getByText('08:00–09:40 高数课 · 东2-101')).toBeTruthy()
@@ -330,7 +330,7 @@ describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
     screen.getByRole('button', { name: 'Cancel' }).click()
 
     await waitFor(() => {
-      expect(screen.queryByText('浙大课程表-2026-2027秋冬')).toBeNull()
+      expect(screen.queryByText('课程表-2026-2027秋冬')).toBeNull()
     })
     expect(importTimetable).not.toHaveBeenCalled()
   })
@@ -366,13 +366,13 @@ describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
       expect(getAgenda.mock.calls.length).toBeGreaterThanOrEqual(2)
     })
     await waitFor(() => {
-      expect(screen.queryByText('浙大课程表-2026-2027秋冬')).toBeNull()
+      expect(screen.queryByText('课程表-2026-2027秋冬')).toBeNull()
     })
   })
 
   it('shows the imported calendar beside the row only when the backend has one', async () => {
     getTimetable.mockResolvedValue({
-      calendar_name: '浙大课程表-2026-2027秋冬',
+      calendar_name: '课程表-2026-2027秋冬',
       event_count: 225,
       imported_at: '2026-09-14T10:00:00',
       path: 'C:/Users/x/ke.ics'
@@ -380,7 +380,7 @@ describe('AgendaView timetable import (WP-ICS-BOARD, 裁定 29.3)', () => {
 
     render(<AgendaView onClose={() => {}} />)
 
-    expect(await screen.findByText('浙大课程表-2026-2027秋冬 · 225 sessions')).toBeTruthy()
+    expect(await screen.findByText('课程表-2026-2027秋冬 · 225 sessions')).toBeTruthy()
   })
 
   it('surfaces a failed preview as a notification without opening the dialog', async () => {
